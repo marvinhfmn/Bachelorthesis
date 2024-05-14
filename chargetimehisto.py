@@ -17,8 +17,6 @@ import warnings
 import tables as pytables
 from pathlib import Path
 
-bla = 1
-
 all_files = glob("/home/wecapstor3/capn/capn106h/sim_databases/*/*/*.db")
 corsika_files = glob("/home/wecapstor3/capn/capn106h/sim_databases/22615/*/*.db")
 nugen_files = [file for file in all_files if file not in corsika_files]
