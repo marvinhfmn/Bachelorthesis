@@ -24,11 +24,11 @@ nugen_files = [file for file in all_files if file not in corsika_files]
 
 #%%
 #simple histogram plot: charge pro bin vs time for one DOM and one event for throughgoing
-@profile # important for terminal command kernprof -vl chargetimehisto.py 
+# @profile # important for terminal command kernprof -vl chargetimehisto.py 
 def getListofChargeTimeDataframes(dbfiles, table = "InIceDSTPulses", truth_table = "truth", classification = 1, E_threshold = 1e7, sumcharge_threshold = 1000):
     indices = []
     dflist = []
-    path = "/home/hpc/capn/capn108h/programs/"
+    path = "/home/hpc/capn/capn108h/programs/DataframesforChargeTimeHisto/"
     filename = "PandasDataframes_Ethresh{:.0e}_sumchargethresh{}.h5".format(E_threshold, sumcharge_threshold)
     with pd.HDFStore(os.path.join(path, filename), 'w') as store:
         for dbfile in tqdm(dbfiles):
@@ -63,15 +63,13 @@ def getListofChargeTimeDataframes(dbfiles, table = "InIceDSTPulses", truth_table
         #save that dflist maybe? so that it doesn't take ages to load the next time 
    
 
-def plotChargeTimeHistogram(choice, seed):
-    totalcharge = choice[0]
-    timecharge_dataframe = choice[1]
-    print([timecharge_dataframe['charge']])
-   
-    # Look for specific values of sum(charge) (1e4) out of the dflist (list comprehension or dictionary) and choose a random event of that subset -> plot it as histogram
-    
+def plotChargeTimeHistogram(choicedf, seed, E_threshold, sumcharge_threshold):
+    totalcharge = choicedf['charge'].sum()
+    timecharge_dataframe = choicedf
+    # print([timecharge_dataframe['charge']], totalcharge)
+
     #ChargeTime-Histogramm: Showcases something approximating the waveform of the signal: adding up the pulses
-    fig, ax = plt.figure()
+    fig = plt.figure()
     plt.grid()
     plt.xlabel(r'time [ns]')
     plt.ylabel("charge [PE]")
@@ -81,8 +79,8 @@ def plotChargeTimeHistogram(choice, seed):
 
     # dbstring = dbfile.split("/")[-1]
     plot_folder = "/home/hpc/capn/capn108h/programs/plots/"
-    now=strftime("%d.%m.%Y_%H:%M:%S",gmtime())
-    filename = f"ChargeTimeHistogram_for_{now}.png"
+    # now=strftime("%d.%m.%Y_%H:%M:%S",gmtime())
+    filename = f"ChargeTimeHistogram_for_Ethres{E_threshold:.0e}_and_sumchargethres{sumcharge_threshold} _seed_{seed}.png"
     plt.savefig(os.path.join(plot_folder, filename))
     plt.close()
 
@@ -97,35 +95,38 @@ def plotChargeTimeHistogram(choice, seed):
     plt.vlines(relativetimes,ymin = 0, ymax = timecharge_dataframe['charge'], alpha = 0.5, color="gray")
     # dbstring = dbfile.split("/")[-1]
     plot_folder = "/home/hpc/capn/capn108h/programs/plots/"
-    now=strftime("%d.%m.%Y_%H:%M:%S",gmtime())
-    filename = f"ChargeTimeScatterplot_for_{now}.png"
+    # now=strftime("%d.%m.%Y_%H:%M:%S",gmtime())
+    filename = f"ChargeTimeScatterplot_for_Ethres{E_threshold:.0e}_and_sumchargethres{sumcharge_threshold} _seed_{seed}.png"
     plt.savefig(os.path.join(plot_folder, filename))
     plt.close()
 
 
 
 def main():
-    classification = 1
-    E_threshold = 1e7 #GeV
-    sumcharge_threshold = 1000 #PE
-    seed = 10 
-
-    getListofChargeTimeDataframes(all_files, classification = classification, E_threshold = E_threshold, sumcharge_threshold = sumcharge_threshold)
-    filename = Path(f"/home/hpc/capn/capn108h/programs/PandasDataframes_Ethresh{E_threshold:.0e}_sumchargethresh{sumcharge_threshold}.h5")
-
     # define parameters -> check wheter h5 table exists for parameters -> if not: call getListofChargeTimeDataframes method |
     # else choose key and call plot method
-    choice = random.choice(dflist)
-    # my_file = Path("/path/to/file")
-    if filename.is_file():
-        plotChargeTimeHistogram()
-        # file exists   
-    # filename = "/home/hpc/capn/capn108h/programs/PandasDataframes_Ethresh10000000.0_sumchargethresh1000.h5"
-    # with pd.HDFStore(filename, 'r') as store:
-    #     keys = store.keys()
-    #     print(keys[:10])
-    #random.seed(10)
-    #random.choice(keys)
+
+    #parameters
+    classification = 1 # 1: throughgoing
+    E_threshold = 1e7 #GeV
+    sumcharge_threshold = 2000 #PE
+    seed = 10 
+    filename = Path(f"/home/hpc/capn/capn108h/programs/DataframesforChargeTimeHisto/PandasDataframes_Ethresh{E_threshold:.0e}_sumchargethresh{sumcharge_threshold}.h5")
+
+    random.seed(seed)
+    for _attempt in range(0,2):
+        try:
+            with pd.HDFStore(filename, 'r') as store:
+                keychoice = random.choice(store.keys())
+                choicedf = store[keychoice]
+                plotChargeTimeHistogram(choicedf, seed, E_threshold, sumcharge_threshold)
+                break
+        except FileNotFoundError:
+            getListofChargeTimeDataframes(all_files, classification = classification, E_threshold = E_threshold, sumcharge_threshold = sumcharge_threshold)
+        except:
+            print("Something went wrong")
+        
+    
 
 if __name__ == "__main__":
     main()
