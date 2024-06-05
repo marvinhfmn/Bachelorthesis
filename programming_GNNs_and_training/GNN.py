@@ -5,7 +5,7 @@
 # import pandas as pd
 from glob import glob
 import os
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True' #Setting environment variable to not run out of memory maybe         
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True' #Setting environment variable to not run out of memory         
 from pathlib import Path
 import torch
 torch.cuda.empty_cache() #Clear the cache to free up memory reserved by PyTorch but not currently used
