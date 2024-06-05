@@ -180,6 +180,8 @@ def CreateCustomDatasets(path: Union[str, List[str]],
                         pulsemap: Union[str, List[str]] = 'InIceDSTPulses', 
                         truth_table: str = 'truth',
                         test_size: float = 0.1,
+                        # shuffle = False,
+                        random_state = 42,
                         INCLUDENULL = False, #NULL entries in databases are abandoned 
                         ):
       
@@ -193,7 +195,7 @@ def CreateCustomDatasets(path: Union[str, List[str]],
     common_kwargs = dict(
                 pulsemaps=pulsemap,
                 features=features,
-                truth=[truth], #truth has to be a list or tupel for line 283 in dataset.py: assert isinstance method
+                truth=[truth], #truth has to be a list or tupel for line 283 in dataset.py: assert isinstance method to not fail
                 truth_table=truth_table,
                 graph_definition=graph_definition,
             )
@@ -215,15 +217,14 @@ def CreateCustomDatasets(path: Union[str, List[str]],
 
         #splitting into train, val, test
         for index, singledataset in enumerate(path):
-            print(singledataset)
             #Get indices where the training parameter is not NULL
             temp, NOTNULLINDICES = GetSelectionIndicesExcludeNULL(db = singledataset, column=truth) 
 
             trainval_selection, test_selection = train_test_split(
-            NOTNULLINDICES, test_size=test_size, 
+            NOTNULLINDICES, test_size=test_size, random_state=random_state
             )
             training_selection, validation_selection = train_test_split(
-            trainval_selection, test_size=test_size, 
+            trainval_selection, test_size=test_size, random_state=random_state
             )
             trainingdatasets.append(SQLiteDataset(path=singledataset, **common_kwargs, selection=training_selection))
             validationdatasets.append(SQLiteDataset(path=singledataset, **common_kwargs, selection=validation_selection))
