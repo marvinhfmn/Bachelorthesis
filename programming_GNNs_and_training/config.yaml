@@ -1,0 +1,67 @@
+#Folder to save runs to
+# basefolder: "/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/"
+basefolder: "/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models(old_datamergedate20240526)"
+
+#Backbone to be used
+backbone: DynEdge
+
+#Detector to be used
+detector: IceCube86
+
+#clustering and percentiles for node and graph definition 
+node_definition:
+  cluster_on: [dom_x, dom_y, dom_z]
+  percentiles: [10, 20, 30, 40, 50, 60, 70, 80, 90]
+
+#number of workers for dataloader 
+num_workers: 32
+
+#amount of epochs to be trained for
+max_epochs: 7
+
+#amount of epochs that are trained before terminating if there are no improvements in the validation loss, set it to -1 if it shouldn't be used
+early_stopping_patience: 5
+
+#size of one batch
+batch_size: 8
+
+#accumulate the gradient for k amount of batches before making an optimiser step, set it to -1 if it shouldn't be used
+accumulate_grad_batches: 10
+
+#defining what flavor of neutrinos should be trained on 
+flavor:  ['NuE', 'NuMu', 'NuTau']
+#supported flavors: ['NuE'], ['NuMu'], ['NuTau'] and every combination of the three flavors: 
+#['NuE', 'NuMu'], ['NuE', 'NuTau'], ['NuMu', 'NuTau'], ['NuE', 'NuMu', 'NuTau']
+
+#path to the datasets
+#/home/wecapstor3/capn/capn108h/l2_labeled/mergedd
+NuE_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22612_merged.db', 
+                  '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22613_merged.db',
+                  '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22614_merged.db']
+
+NuMu_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22644_merged.db', 
+                    '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22645_merged.db', 
+                    '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22646_merged.db']
+
+NuTau_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22633_merged.db', 
+                    '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22634_merged.db', 
+                    '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22635_merged.db']
+
+corsikasim_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22615_merged.db']
+
+#Include corsika?
+use_corsika_bool: False 
+
+#parameter to train on (also target label)
+training_parameter: ['first_vertex_energy']
+
+#List of event-level columns in the input files that should be used and added as attributes on the graph objects.
+addedattributes: ['cosmic_primary_type']
+
+# training paramter + additional attributes = truth
+
+#Learning rate 
+lr: !!float 1e-4
+
+#random state variable, useful to recreate train, val and test datasets (see CustomAdditionsforGNNTraining.CreateCustomDatasets)
+random_state: 42
