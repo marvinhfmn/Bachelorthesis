@@ -1,4 +1,5 @@
 #Script to analyse and plot the results of GNN training 
+from typing import List, Union
 import os
 from glob import glob
 from matplotlib import colors
@@ -34,24 +35,58 @@ def loadresults(subfolder, filename=TESTRESULTNAME):
         raise("Couldn't find test results dataframe.")
     return result_df
 
-def plot_resultsashisto(test_results, subfolder, backbone = "DynEdge", bins =100, prediction = 'energy_pred', truth = 'first_vertex_energy'):
+def plot_resultsashisto(test_results: pd.DataFrame, 
+                        subfolder: str, 
+                        backbone = "DynEdge", 
+                        bins =100, 
+                        prediction: Union[str, List[str]] = ['energy_pred'], 
+                        target_label: Union[str, List[str]] = ['first_vertex_energy'],
+                        ) -> None:
     """
     Method to plot the difference between the true energy and the reconstructed/predicted energy as a histogramm.
     test_results: pandas dataframe that includes a prediction and a truth column 
     subfolder: Folder to save the histogram to 
     """
+    if isinstance(prediction, str):
+        prediction = [prediction]
+    if isinstance(target_label, str):
+        target_label = [target_label]
+    # Ensure prediction and target_label are lists with one element
+    if len(prediction) != 1 or len(target_label) != 1:
+        raise ValueError("prediction and target_label should each be a list with exactly one element.")
+    
+    prediction_col = prediction[0]
+    target_col = target_label[0]
+
     # Filter out zero values
-    zero_mask = (test_results[truth] == 0) #Create mask for entries that are 0 
-    filtered_predictions = test_results[prediction][~zero_mask]
-    filtered_truth = test_results[truth][~zero_mask]
+    zero_mask = (test_results[target_col] == 0) #Create mask for entries that are 0 
+
+    # Check if there are any zero values
+    if zero_mask.any():
+        print("There are zero values in the first_vertex_energy column.")
+    else:
+        print("There are no zero values in the first_vertex_energy column.")
+
+    filtered_predictions = test_results[prediction_col][~zero_mask]
+    filtered_truth = test_results[target_col][~zero_mask]
 
     log_predictions = np.log10(filtered_predictions)
     log_truth = np.log10(filtered_truth)
 
+    # Calculate the differences
+    differences = log_predictions - log_truth
+
+    # Calculate mean and standard deviation
+    mean_diff = np.mean(differences)
+    std_diff = np.std(differences)
+
     fig = plt.figure()
-    plt.hist(log_predictions - log_truth, bins = bins, histtype = "step")
+    plt.hist(differences, bins = bins, histtype = "step")
     plt.axvline(0, ls = '--', color = "black", alpha = 0.5)
-    plt.title(f"Training parameter: {truth}")
+    plt.text(mean_diff + 0.05, plt.ylim()[1] * 0.9, f'Mean: {mean_diff:.2f}', color='red')
+    plt.text(mean_diff + 0.05, plt.ylim()[1] * 0.85, f'Std Dev: {std_diff:.2f}', color='red')
+
+    plt.title(f"Training parameter: {target_label}")
     plt.xlabel('Reco. Energy - True Energy [log10 GeV]', size = 14)
     plt.ylabel('Amount', size = 14)
     name = f"EnergypredvsEnergyfromtruth_{backbone}.png"
@@ -62,6 +97,8 @@ def plot_resultsashisto(test_results, subfolder, backbone = "DynEdge", bins =100
         message = colored("SUCCESSFUL:", "green") + f'histogram plotted to {temp}'
     except:
         message = colored("UNSUCCESSFUL:", "red") + 'Could not plot the histogram'
+    logger = Logger()
+    logger.info(message)
 
 def plot_lossesandlearningrate(subfolder=SUBFOLDER):
     """
@@ -140,21 +177,23 @@ def plotEtruevsEreco(dataframe, subfolder, normalise=['E_true']):
     
     bins_Epred = np.geomspace(energy_prediction.min(), energy_prediction.max(), num=100)
     bins_Etrue= np.geomspace(energy_true.min(), energy_true.max(), num=101)
-    fig, ax = plt.subplots()
-
-    #adding line which showcases a perfect match in prediction and truth // identity line
-    min_energy = min(energy_true.min(), energy_prediction.min())
-    max_energy = max(energy_true.max(), energy_prediction.max())
-    ax.plot([min_energy, max_energy], [min_energy, max_energy], 'r--', label='Identity Line')
     
     for i in range(len(normalise)):
+        fig, ax = plt.subplots()
+
+        #adding line which showcases a perfect match in prediction and truth // identity line
+        min_energy = min(energy_true.min(), energy_prediction.min())
+        max_energy = max(energy_true.max(), energy_prediction.max())
+        ax.plot([min_energy, max_energy], [min_energy, max_energy], 'r--', label='Identity Line')
+
         if (normalise[i]=='E_true'):
             filename = "2dHisto_EtruevsEreco_unweighted_normalisedalongEtrue.png" 
             #Create 2d histogram
             hist, xedges, yedges = np.histogram2d(energy_true, energy_prediction, bins=[bins_Etrue, bins_Epred])
             #Normalize histogram (columnwise)
-            hist_normalized = hist / hist.sum(axis=1, keepdims=True)
-            #TODO: Handle Zero division warnings
+            Etrue_sums = hist.sum(axis=1, keepdims=True)
+            Etrue_sums[Etrue_sums == 0] = 1  # Prevent division by zero
+            hist_normalized = hist / Etrue_sums
 
             pc = plt.pcolormesh(xedges, yedges, hist_normalized.T, norm=colors.LogNorm(), 
                     cmap='viridis')
@@ -169,8 +208,9 @@ def plotEtruevsEreco(dataframe, subfolder, normalise=['E_true']):
             #Create 2d histogram
             hist, xedges, yedges = np.histogram2d(energy_true, energy_prediction, bins=[bins_Etrue, bins_Epred])
             #Normalize histogram (columnwise)
-            hist_normalized = hist / hist.sum(axis=0, keepdims=True)
-            #TODO: Handle Zero division warnings
+            Ereco_sums = hist.sum(axis=0, keepdims=True)
+            Ereco_sums[Ereco_sums == 0] = 1  # Prevent division by zero
+            hist_normalized = hist / Ereco_sums
 
             pc = plt.pcolormesh(xedges, yedges, hist_normalized.T, norm=colors.LogNorm(), 
                     cmap='viridis')
@@ -179,7 +219,7 @@ def plotEtruevsEreco(dataframe, subfolder, normalise=['E_true']):
             cbar = plt.colorbar(pc, ax=ax)
             cbar.ax.set_ylabel('Normalized Counts')
             ax.set_title(f"unweighted but normalised (with respect to reconstructed energy) plot \n of true energy vs predicted energy \n Training parameter: {truth} \n {timeofrun.replace('_', ' ')}")
-        elif normalise[i] is None:
+        else:
             filename = "2dHisto_EtruevsEreco_unweighted_notnormalised.png"
 
             hist = ax.hist2d(energy_true, energy_prediction, bins=[bins_Etrue, bins_Epred], 
@@ -215,6 +255,7 @@ def plotEtruevsEreco(dataframe, subfolder, normalise=['E_true']):
             logger.info(message)
 
         plt.show()
+        plt.close(fig)
 
 #Calculate Quantiles (eg middle 68% qunatile) with scipy.stats.iqr for the reconstructed energies (one iqr per bin) and plot iqr vs true energy
 #iqr: width of the E reco distribution for a E true bin
@@ -312,20 +353,21 @@ def IQRvstruevertexpos():
     Method to plot the performance of the GNN, measured as IQR (normalised with respect tp E_true or E_reco???), 
     vs the true vertex position to get a sense for the positional dependency of the reconstruction.
     Plots true vertex position in polar koordinates vs IQR
+    No functionality yet.
     """
     return
 
 def main():  
-    sub_folder = '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/run_from_2024.06.16_10:30:38_UTC'
+    sub_folder = '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models(old_datamergedate20240526)/run_from_2024.06.21_08:39:12_UTC'
     df = loadresults(subfolder=sub_folder)
-    # training_parameter = df.keys()[1]
+    training_parameter = df.keys()[1]
+    print(df.keys())
     # plotEtruevsEreco(df, subfolder=sub_folder, normalise=None)
     # plotEtruevsEreco(df, subfolder=sub_folder, normalise='E_reco')
-    # plot_lossesandlearningrate(sub_folder)
-    # plot_resultsashisto(df, subfolder=sub_folder, truth=training_parameter)
+    plotEtruevsEreco(df, subfolder=sub_folder, normalise=['E_true', 'E_reco', 'notnorm'])
+    plot_lossesandlearningrate(sub_folder)
+    plot_resultsashisto(df, subfolder=sub_folder, target_label=training_parameter)
     plotIQRvsEtrue(df, subfolder=sub_folder)
-
-
 
 if __name__ == "__main__":
         main() 
