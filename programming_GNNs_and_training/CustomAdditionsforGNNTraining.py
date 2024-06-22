@@ -35,7 +35,7 @@ def make_train_validation_test_dataloader(
     index_column: str = "event_no",
     labels: Optional[Dict[str, Callable]] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Construct train and test `DataLoader` instances."""
+    """Construct train, validation and test `DataLoader` instances."""
     # Reproducibility
     rng = np.random.default_rng(seed=seed)
     # Checks(s)
@@ -136,7 +136,11 @@ def make_train_validation_test_dataloader(
         test_dataloader,
     )
 
-def DataloaderSelection(db, classification = 1.0, column = 'classification'):
+def DataloaderSelection(db, value = 1.0, column = 'classification'):
+    """
+    Selects indices where the column fulfills the specified value. In case of column = 'classification and value = 1.0 throughgoing tracks would be selected.
+    Returns the database filepaths and the selection indices in that order
+    """
     indices = []
     #ensure that db is a list
     if isinstance(db, str):
@@ -145,7 +149,7 @@ def DataloaderSelection(db, classification = 1.0, column = 'classification'):
     for dbfile in db:
             con = sql.connect(dbfile)
             cur = con.cursor()
-            ids = cur.execute(f"SELECT event_no FROM truth WHERE {column}={classification}")
+            ids = cur.execute(f"SELECT event_no FROM truth WHERE {column}={value}")
             ids = ids.fetchall()
             ids = [[dbfile, int(event_id[0])] for event_id in ids]
             indices += ids
@@ -155,6 +159,9 @@ def DataloaderSelection(db, classification = 1.0, column = 'classification'):
     return dbfilepaths, selection_indices
 
 def GetSelectionIndicesExcludeNULL(db:  Union[str, List[str]], column: str):
+    """
+    Selects events from db that are not NULL and returns database filepaths and the selection indices in that order
+    """
     indices = []
     #ensure that db is a list
     if isinstance(db, str):
@@ -175,6 +182,9 @@ def GetSelectionIndicesExcludeNULLandZERO(
           db:  Union[str, List[str]], 
           column: str
           ):
+    """
+    Selects events from db that are not NULL and are not 0 (zero) and returns database filepaths and the selection indices in that order
+    """
     indices = []
     #ensure that db is a list
     if isinstance(db, str):
@@ -193,10 +203,19 @@ def GetSelectionIndicesExcludeNULLandZERO(
 
 def GetSelectionIndicesExcludebelowThreshold(
           db:  Union[str, List[str]], 
-          column: str, 
-          threshold: int = 10
+          column: Union[str, List[str]], 
+          threshold: int = 10, #threshold energy in GeV
           ):
+    """
+    Selects events from db that are above a certain threshold and returns database filepaths and the selection indices, in that order.
+    """
     indices = []
+    logger = Logger()
+    if isinstance(column, List):
+        if len(column) > 1:
+            logger.info("more than one truth parameter not supported yet... taking the first entry in the truth list")
+        column = column[0]
+        
     #ensure that db is a list
     if isinstance(db, str):
         db = [db]
@@ -218,7 +237,8 @@ def GetSelectionIndicesExcludebelowThreshold(
 def CreateCustomDatasets(path: Union[str, List[str]], 
                         graph_definition, 
                         features: List[str], 
-                        truth: str, 
+                        truth: Union[str, List[str]], 
+                        training_target_label: Union[str, List[str]] = 'first_vertex_energy',
                         pulsemap: Union[str, List[str]] = 'InIceDSTPulses', 
                         truth_table: str = 'truth',
                         test_size: float = 0.1,
@@ -228,19 +248,22 @@ def CreateCustomDatasets(path: Union[str, List[str]],
                         INCLUDEZEROS: bool = False, #'0' entries in databases are abandoned by default
                         INCLUDENULL: bool = False, #NULL entries in databases are abandoned by default
                         ):
-    """Creates a custom Dataset, which can be reproduced due to the random_state variable"""
+    """Creates a custom Dataset, which can be reproduced due to the random_state variable. Although I am not sure about the event distribution inside these  datasets"""
       
     logger = Logger()
     if(INCLUDENULL):
         # logger.info(f"Jokes on you, there is no functionality in setting INCLUDENULL to {INCLUDENULL}, except you don't get a dataset. Nice.")
         raise Exception(f"Jokes on you, there is no functionality in setting INCLUDENULL to {INCLUDENULL}, except you don't get a dataset. Nice.")
-    
-    
-    
+      
+    #Assures truth (or training parameter) is a list
+    if isinstance(truth, str):
+        truth = [truth]
+        #truth has to be a list or tupel for line 283 in dataset.py: assert isinstance method to not fail
+
     common_kwargs = dict(
                 pulsemaps=pulsemap,
                 features=features,
-                truth=[truth], #truth has to be a list or tupel for line 283 in dataset.py: assert isinstance method to not fail
+                truth=truth, 
                 truth_table=truth_table,
                 graph_definition=graph_definition,
             )
@@ -265,11 +288,11 @@ def CreateCustomDatasets(path: Union[str, List[str]],
             #Get indices where the training parameter fulfills requirements 
             if(setThreshold):
                 assert (INCLUDEZEROS==False), "Combination of INCLUDEZERO: True and setThreshold: True not supported"
-                temp, VALIDINDICES = GetSelectionIndicesExcludebelowThreshold(db = singledataset, column=truth, threshold=threshold)
+                temp, VALIDINDICES = GetSelectionIndicesExcludebelowThreshold(db = singledataset, column=training_target_label, threshold=threshold)
             elif(INCLUDEZEROS):
-                temp, VALIDINDICES = GetSelectionIndicesExcludeNULL(db = singledataset, column=truth) 
+                temp, VALIDINDICES = GetSelectionIndicesExcludeNULL(db = singledataset, column=training_target_label) 
             else:
-                temp, VALIDINDICES = GetSelectionIndicesExcludeNULLandZERO(db = singledataset, column=truth) 
+                temp, VALIDINDICES = GetSelectionIndicesExcludeNULLandZERO(db = singledataset, column=training_target_label) 
 
             trainval_selection, test_selection = train_test_split(
             VALIDINDICES, test_size=test_size, random_state=random_state
@@ -296,8 +319,12 @@ def CreateCustomDatasets(path: Union[str, List[str]],
     #save dataset configuration doesn't work for ensembleDatasets
     # dataset.config.dump(f"savedDatasets/{datasetname}.yml")
 
-#Handle Entries in Database where training parameter is zero. would otherwise lead to infinite losses (in transform target)
+
 def HandleZeros(x):
+    """
+    Handle Entries in Database where training parameter is zero. would otherwise lead to infinite losses (in transform target)
+    Not relevant if you use GetSelectionIndicesExcludeNULLandZERO or GetSelectionIndicesExcludebelowThreshold with a threshold above zero
+    """
     zero_mask = (x == 0) #Create mask for entries that are 0 
     if torch.is_tensor(x):
         if not torch.any(zero_mask): #if there are no 0 entries apply log10 directly
