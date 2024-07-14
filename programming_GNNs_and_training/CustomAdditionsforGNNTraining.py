@@ -3,6 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 import sqlite3 as sql
+import h5py
 import torch
 from torch_geometric.data import Data
 from glob import glob
@@ -45,6 +46,28 @@ class CustomLabel_depoEnergy(Label):
         tracks_and_spurs = torch.nan_to_num(graph[self._vte]) + torch.nan_to_num(graph[self._vse])
         deposited_energy = vertex_energies+tracks_and_spurs
         return deposited_energy
+
+class renormalized_sim_weight(Label):
+    """Custom label: renormalized sim_weight"""
+    def __init__(
+            self,
+            db_size: int,
+            sel_size: int,
+            sim_weight: str = "sim_weight",
+            key: str = "renorm_sim_weight",
+            ):
+
+        self._db_size = db_size
+        self._sel_size = sel_size
+        self._sim_weight = sim_weight
+
+        # Base class constructor
+        super().__init__(key=key)
+
+    def __call__(self, graph: Data) -> torch.tensor:
+        """Compute label for `graph`."""
+        renorm_sim_weight = graph[self._sim_weight] * self._db_size / self._sel_size
+        return renorm_sim_weight
     
 def make_train_validation_test_dataloader(
     db: str,
@@ -272,7 +295,6 @@ def GetSelectionIndicesExcludebelowThreshold(
     selection_indices = [ids for [path, ids] in indices]
     return dbfilepaths, selection_indices
 
-
 def GetSelectionIndices_basedonClassification(
         db:  Union[str, List[str]], 
         classifications: Union[int, List[int]] = [8, 9, 19, 20, 22, 23, 26, 27], 
@@ -329,12 +351,14 @@ def GetSelectionIndices_basedonClassification(
     return list(databases), list(indices)
 
 def GetTrainingLabelEntries(
-          db:  Union[str, List[str]], 
-          column: str = 'first_vertex_energy', 
-          threshold: int = 10, #threshold energy in units of db entries
-          ) -> List[float]:
+    db: Union[str, List[str]], 
+    column: str = 'deposited_energy', 
+    threshold: int = 10,  # threshold energy in units of db entries
+    rows_to_calculate_column: List[str] = ["first_vertex_energy", "second_vertex_energy", "third_vertex_energy", "visible_track_energy", "visible_spur_energy"],  
+) -> List[float]:
     """
     Selects values of column from the db where they are above a certain threshold and returns a list of these values.
+    If the column is 'deposited_energy' and not directly present in the db, calculates it using provided columns.
     """
     energy_values = []
     
@@ -343,13 +367,25 @@ def GetTrainingLabelEntries(
         db = [db]
     
     for dbfile in db:
-        con = sql.connect(dbfile)
-        cur = con.cursor()
-        query = f"SELECT {column} FROM truth WHERE {column} > {threshold}"
-        cur.execute(query)
-        values = cur.fetchall()
-        energy_values += [float(value[0]) for value in values]
-        con.close()
+        with sql.connect(dbfile) as con:
+            cur = con.cursor()
+            # Check if the column exists in the 'truth' table
+            cur.execute("PRAGMA table_info(truth)")
+            columns = [info[1] for info in cur.fetchall()]
+
+            if column not in columns:
+                deposited_energy_str = " + ".join([f"IFNULL({col}, 0)" for col in rows_to_calculate_column])
+                query = f"""
+                SELECT ({deposited_energy_str}) AS deposited_energy
+                FROM truth 
+                WHERE ({deposited_energy_str}) > ?
+                """
+            else:
+                query = f"SELECT {column} FROM truth WHERE {column} > ?"
+            
+            cur.execute(query, (threshold,))
+            values = cur.fetchall()
+            energy_values += [float(value[0]) for value in values]
     
     return energy_values
      
@@ -404,9 +440,7 @@ def CreateCustomDatasets_traininglabelinDataset(
             path = [path] # enumerate(path) would otherwise lead to the string splitting into single characters
         elif path and all(isinstance(s, str) for s in path):
             logger.info("Multiple dataset paths detected")
-        else: 
-            logger.info("Path is an empty list ... Execution terminated")
-            return
+    
         
         trainingdatasets = []
         validationdatasets = []
@@ -439,8 +473,8 @@ def CreateCustomDatasets_traininglabelinDataset(
 
         return training_ensemble, validation_ensemble, testing_ensemble
     
-    else:
-        logger.info("Path is not a string or list of strings ... Execution terminated")
+    else: 
+        logger.info("Path is an empty list ... Execution terminated")
         return
     
     #save dataset configuration doesn't work for ensembleDatasets
@@ -456,9 +490,11 @@ def CreateCustomDatasets_CustomTrainingLabel(
                         deposited_energy_cols: List[str] = ["first_vertex_energy", "second_vertex_energy", "third_vertex_energy", "visible_track_energy", "visible_spur_energy"],
                         pulsemap: Union[str, List[str]] = 'InIceDSTPulses', 
                         truth_table: str = 'truth',
+                        config_for_dataset_datails: Dict[int, int] = {},
+                        root_database_lengths: dict = {},
                         test_size: float = 0.1,
                         random_state = 42,
-                        test_truth: Union[str, List[str]] = [],
+                        test_truth: Union[str, List[str]] =  ['cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'],
                         logger: Logger = None, 
                         threshold: int = 10,
                         ) -> Tuple[EnsembleDataset, EnsembleDataset, EnsembleDataset]:
@@ -475,7 +511,10 @@ def CreateCustomDatasets_CustomTrainingLabel(
     - deposited_energy_cols: List of columns representing deposited energy to consider for thresholding.
     - pulsemap: Name or list of names of pulsemap tables in the databases.
     - truth_table: Table name in the databases containing truth information.
-    - test_size: Proportion of data to reserve for testing.
+    - config_for_dataset_datails: dictionary of details about the database to be used with the dataset. e.g. 'energy_levels': what database id corresponds to high, mid, low energy events
+        'ratio': what is the ratio between those and 'total_events_per_flavor': what is the desired total amount of events to be used per flavor. 
+    - test_size: Proportion of data to reserve for testing. The training and validation datasets are split with the same proportion. 
+        e.g test_size=0.1: trainval 90%, test 10%; then validation 10% of trainval, so 9% of the original data size and 81% training. 
     - random_state: Seed for random number generator to ensure reproducibility.
     - test_truth: Optional List of event level truths to add to the graph of only the testing dataset. list elements should be exclusive (no overlap with truth)
     - logger: Optional logger object for logging messages.
@@ -521,24 +560,102 @@ def CreateCustomDatasets_CustomTrainingLabel(
         else: 
             logger.info("Path is an empty list ... Execution terminated")
             return
-        
+    
+    # Define the energy levels
+    energy_levels = config_for_dataset_datails.get('energy_levels', {
+        'high': [22612, 22644, 22635],
+        'mid': [22613, 22645, 22634],
+        'low': [22614, 22646, 22633]
+    }
+    )
+
+    # Define the ratio
+    ratios = config_for_dataset_datails.get('ratios', {'high': 1, 'mid': 4, 'low': 10})
+
+    # Calculate the total ratio sum
+    total_ratio = sum(ratios.values())
+
+    # Determine the number of valid indices for each energy level
+    total_events_per_flavor = config_for_dataset_datails.get('total_events_per_flavor', total_ratio*1e5)  # total number of events to be distributed
+
+    num_high_events = int(total_events_per_flavor * (ratios['high'] / total_ratio))
+    num_mid_events = int(total_events_per_flavor * (ratios['mid'] / total_ratio))
+    num_low_events = int(total_events_per_flavor * (ratios['low'] / total_ratio))
+    
+    dataset_savedir = '/home/saturn/capn/capn108h/programming_GNNs_and_training/datasets/'
+    hdf5_filedir = os.path.join(dataset_savedir, 'dataset_indices')
+
+    target_label_str = training_target_label
+    if not isinstance(target_label_str, str):
+        target_label_str = target_label_str.key
+
+    os.makedirs(hdf5_filedir, exist_ok=True)
+    hdf5_filepath = os.path.join(hdf5_filedir, f'valid_indices_for_{target_label_str}.h5')  
+
     trainingdatasets = []
     validationdatasets = []
     testingdatasets = []
 
     #splitting into train, val, test
     for singledataset in path:
-        #Get indices where classification fulfills requirements           
-        database, VALIDINDICES = GetSelectionIndices_basedonClassification(
-                                            db=singledataset, 
-                                            classifications=classifications, 
-                                            deposited_energy_cols=deposited_energy_cols,
-                                            threshold=threshold
-                                            )
-        VALIDINDICES = VALIDINDICES[0]
+
+        database_id = int(singledataset.split('/')[-1].split('_')[0])
+
+        root_database_length = root_database_lengths.get(database_id)
+        # Determine the number of events to select based on energy level
+        if database_id in energy_levels['high']:
+            num_events = num_high_events
+        elif database_id in energy_levels['mid']:
+            num_events = num_mid_events
+        elif database_id in energy_levels['low']:
+            num_events = num_low_events
+        else:
+            num_events = total_events_per_flavor  # for background, just take the same amount as for each flavor
+        
+        # print(hdf5_filepath)
+        # print('\n')
+        valid_ids = None
+
+        # Load saved indices if available
+        grp_name = f"{database_id}_{'_'.join(map(str, classifications))}"
+        if os.path.exists(hdf5_filepath):
+            with h5py.File(hdf5_filepath, 'r') as f:
+                if grp_name in f:
+                    valid_ids = f[grp_name][:]
+                    # logger.info(f"Loaded indices from {hdf5_filepath}")
+        
+        if valid_ids is None:
+            logger.info(f'No presaved incides found. Creating Datasets...')
+            # Get indices where classification fulfills requirements           
+            database, valid_ids = GetSelectionIndices_basedonClassification(
+                                                db=singledataset, 
+                                                classifications=classifications, 
+                                                deposited_energy_cols=deposited_energy_cols,
+                                                threshold=threshold
+                                                )
+            valid_ids = valid_ids[0]
+            # print(f'length of valid indices for {database_id}: {len(valid_ids)}')
+
+            # Save the indices for future use
+            with h5py.File(hdf5_filepath, 'a') as f:
+                if grp_name in f:
+                    del f[grp_name]
+                f.create_dataset(grp_name, data=valid_ids)
+
+        print(f'ID: {database_id}, Num_events: {num_events}, valid ids: {len(valid_ids)}')
+
+        # Randomly select a subset of valid_ids based on the num_events calculated
+        if len(valid_ids) > num_events:
+            np.random.seed(seed=random_state)
+            valid_ids = np.random.choice(valid_ids, num_events, replace=False)
+            print(f'valid ids larger than num events')
+        else: 
+            print(f'valid ids smaller than num events')        
+        
+        # print("\n")
 
         trainval_selection, test_selection = train_test_split(
-        VALIDINDICES, test_size=test_size, random_state=random_state
+        valid_ids, test_size=test_size, random_state=random_state
         )
         training_selection, validation_selection = train_test_split(
         trainval_selection, test_size=test_size, random_state=random_state
@@ -546,17 +663,42 @@ def CreateCustomDatasets_CustomTrainingLabel(
         training_dataset = CustomSQLiteDataset(path=singledataset, **trainval_kwargs, selection=training_selection)
         training_dataset.add_label(training_target_label)
         trainingdatasets.append(training_dataset)
+        print(f'id {database_id} Length train selection {len(training_selection)}')
 
         validation_dataset = CustomSQLiteDataset(path=singledataset, **trainval_kwargs, selection=validation_selection)
         validation_dataset.add_label(training_target_label)
         validationdatasets.append(validation_dataset)
+        print(f'id {database_id}, Length val selection {len(validation_selection)}')
 
         testing_dataset = CustomSQLiteDataset(path=singledataset, **test_kwargs, selection=test_selection)
         testing_dataset.add_label(training_target_label)
+        renorm_sim_weight = renormalized_sim_weight(db_size=root_database_length, sel_size=len(test_selection))
+        testing_dataset.add_label(renorm_sim_weight)
         testingdatasets.append(testing_dataset)
+        print(f'id {database_id} Length test selection {len(test_selection)}')
+    
 
-    return EnsembleDataset(trainingdatasets), EnsembleDataset(validationdatasets), EnsembleDataset(testingdatasets) 
+    training_ensemble = EnsembleDataset(trainingdatasets)
+    print(f"Length training ensemble: {len(training_ensemble)}")
 
+    validation_ensemble = EnsembleDataset(validationdatasets)
+    print(f"Length validation ensemble: {len(validation_ensemble)}")
+
+    testing_ensemble = EnsembleDataset(testingdatasets)
+    print(f"Length testing ensemble: {len(testing_ensemble)}")
+
+    print(f"Total events considered: {len(training_ensemble) + len(validation_ensemble)+ len(testing_ensemble)}")
+
+    # total_ensemble = EnsembleDataset([training_ensemble, validation_ensemble, testing_ensemble])
+
+    dataset_savedir_for_training_label = os.path.join(dataset_savedir, f"classif{'_'.join(map(str, classifications))}")
+    os.makedirs(dataset_savedir_for_training_label, exist_ok=True)
+    ensemble_path = os.path.join(dataset_savedir_for_training_label, f"TotalEnsemble__{target_label_str}_rng{random_state}.pt")
+    if not os.path.exists(ensemble_path):
+        torch.save([training_ensemble, validation_ensemble, testing_ensemble], ensemble_path)
+        logger.info(f"New Total Ensemble saved to: {ensemble_path}")
+
+    return training_ensemble, validation_ensemble, testing_ensemble
 
 def HandleZeros(x):
     """
@@ -572,41 +714,5 @@ def HandleZeros(x):
                 result[zero_mask] = -7 #apply -7 to zero elements, which is equivalent to torch.log10(torch.tensor(1e-7)), where 1e-7 is an arbitrarily chosen value
                 result[~zero_mask] = torch.log10(x[~zero_mask]) #apply log10 to non-zero elements
                 return result
-    
-class CustomIceCube86(Detector):
-    """Custom `Detector` class for IceCube without pmt area."""
-
-    geometry_table_path = os.path.join(
-        ICECUBE_GEOMETRY_TABLE_DIR, "icecube86.parquet"
-    )
-    xyz = ["dom_x", "dom_y", "dom_z"]
-    string_id_column = "string"
-    sensor_id_column = "sensor_id"
-
-    def feature_map(self) -> Dict[str, Callable]:
-        """Map standardization functions to each dimension of input data."""
-        feature_map = {
-            "dom_x": self._dom_xyz,
-            "dom_y": self._dom_xyz,
-            "dom_z": self._dom_xyz,
-            "dom_time": self._dom_time,
-            "charge": self._charge,
-            "rde": self._rde,
-            "hlc": self._identity,
-        }
-        return feature_map
-
-    def _dom_xyz(self, x: torch.tensor) -> torch.tensor:
-        return x / 500.0
-
-    def _dom_time(self, x: torch.tensor) -> torch.tensor:
-        return (x - 1.0e04) / 3.0e4
-
-    def _charge(self, x: torch.tensor) -> torch.tensor:
-        return torch.log10(x)
-
-    def _rde(self, x: torch.tensor) -> torch.tensor:
-        return (x - 1.25) / 0.25
-
 
 # if __name__ == "__main__":
