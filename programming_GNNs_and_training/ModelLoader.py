@@ -11,7 +11,6 @@ from pytorch_lightning.loggers import CSVLogger
 from graphnet.models.graphs import KNNGraph
 from graphnet.models.detector.icecube import IceCube86
 from graphnet.models.graphs.nodes.nodes import PercentileClusters
-from graphnet.models import StandardModel
 from graphnet.models.gnn import DynEdge
 from graphnet.models.task.reconstruction import EnergyReconstruction
 from graphnet.models import StandardModel, Model
@@ -33,6 +32,7 @@ torch.set_float32_matmul_precision('medium')
 
 PATH = "/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models(old_datamergedate20240526)"
 TIMEOFRUN = "run_from_2024.06.20_15:20:54_UTC" 
+SUBFOLDER = f"{PATH}/{TIMEOFRUN}"
 FILENAME = "GNN_DynEdge_mergedNuEandNuTau"
 
 NUM_WORKERS = 32
@@ -54,13 +54,17 @@ NuTaufiles = NuEfiles = [path for path in datasetpath if (path.split("/")[-1]).s
 
 CorsikaSimfiles = [datasetpath[3]]
 
-def evaluateModel(model, path=PATH, timeofrun=TIMEOFRUN, filename=FILENAME):
+def evaluateModel(
+        model: Union[Model, StandardModel], 
+        subfolder: str = SUBFOLDER, 
+        filename: str = FILENAME
+        ):
     """
     If there is already a test result do nothing else create dataset and evaluate the model on this test dataset, save results
     """
     logger = Logger()
-    if os.path.isfile(f"{path}/{timeofrun}/test_results.h5"):
-        #maybe Logger statement
+    if os.path.isfile(f"{subfolder}/test_results.h5"):
+        logger.info("There is already a test result in the specified folder. Skipping evaluate method.")
         return
     else:
         #TODO: Read config file in path/subfolder
@@ -72,8 +76,8 @@ def evaluateModel(model, path=PATH, timeofrun=TIMEOFRUN, filename=FILENAME):
         feature_names = model._graph_definition._input_feature_names
 
         # Access the training parameter
-        training_parameter = model.target_labels[0]
-        # print("Training Parameter:", training_parameter)
+        training_parameter = model.target_labels
+        print("Training Parameter:", training_parameter)
 
         # Construct dataloaders
         training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets(path=NuEfiles, 
@@ -86,23 +90,26 @@ def evaluateModel(model, path=PATH, timeofrun=TIMEOFRUN, filename=FILENAME):
         dataloader_testing_instance = DataLoader(testing_dataset, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
         
         test_results = model.predict_as_dataframe(dataloader = dataloader_testing_instance,
-                                            additional_attributes = [training_parameter],
+                                            additional_attributes = training_parameter,
                                             gpus = [0])
         
         #save test results in hdf5 file
         try: 
-            test_results.to_hdf(os.path.join(f"{path}/{timeofrun}", 'test_results.h5'), key='test_results', mode='w')
-            logger.info("Succesfully evaluated the model. Results can be found under {}".format(os.path.join(f"{path}/{timeofrun}", 'test_results.h5')))
+            test_results.to_hdf(os.path.join(f"{subfolder}", 'test_results.h5'), key='test_results', mode='w')
+            logger.info("Succesfully evaluated the model. Results can be found under {}".format(os.path.join(f"{subfolder}", 'test_results.h5')))
         except:
             logger.info("Saving test results unsuccesful.")
 
-def LoadModel(path=PATH, timeofrun=TIMEOFRUN, filename=FILENAME, load_weights=True):
+def LoadModel(
+        subfolder: str = SUBFOLDER, 
+        filename: str = FILENAME, 
+        load_weights: bool = True):
     """
     Load model from config and initialise weights if there is a '.pth' file to be found.
     """
     # Construct the full paths
-    config_file_path = os.path.join(path, timeofrun, f"{filename}.yml")
-    weight_file_path = os.path.join(path, timeofrun, f"{filename}.pth")
+    config_file_path = os.path.join(subfolder, f"{filename}.yml")
+    weight_file_path = os.path.join(subfolder, f"{filename}.pth")
 
     # Load model configuration
     model_config = ModelConfig.load(config_file_path)
@@ -118,19 +125,20 @@ def LoadModel(path=PATH, timeofrun=TIMEOFRUN, filename=FILENAME, load_weights=Tr
     return model
 
 #TODO: look at how checkpoints work and how to integrate them into the workflow 
-def resumeGNNTrainingfromcheckpoint():
+def resumeGNNTrainingfromckpt():
     """
     Using the ckpt_path argument (is internally passed to the pytorch 'Trainer') to resume training from a checkpoint. 
     using this approach is useful for continuing training from a specific point, including optimizer states, 
     learning rate schedules, and the current epoch.
     """
     subfolder = ''
+    # Figure out how to get the right yaml file -> then read it and access parameters, maybe as commandline argument 
     model_config = ModelConfig.load("model.yml")
     model = Model.from_config(model_config)  # With randomly initialised weights.
     model.load_from_checkpoint("checkpoint.ckpt")  # Now with trained weight.
     return
 
-def GNNTraining():
+def GNNTrainingwithmodelfromckpt():
     """
     Using the load_from_checkpoint method to instantiate a new model instance from a checkpoint outside 
     the context pytorch 'Trainer'.
@@ -149,9 +157,9 @@ def main():
     # print(detector)
     # print(dir(model._graph_definition._node_definition._trainer))
     # print(model._graph_definition._node_definition.parameters)
-    # print(model.target_labels)
+    print(model.target_labels)
 
-    print(dir(model))
+    print(type(model))
     # evaluateModel(model)
 
 if __name__ == "__main__":
