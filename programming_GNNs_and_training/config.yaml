@@ -10,8 +10,8 @@ detector: IceCube86
 
 #clustering and percentiles for node and graph definition 
 node_definition:
-  cluster_on: [dom_x, dom_y, dom_z]
-  percentiles: [10, 20, 30, 40, 50, 60, 70, 80, 90]
+  cluster_on: [dom_x, dom_y, dom_z, rde, hlc] #[dom_x, dom_y, dom_z] warum kann ich hierauf nicht clustern tf
+  percentiles: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 
 dataloader_config:
   batch_size: 8 #size of one batch
@@ -21,10 +21,10 @@ dataloader_config:
 max_epochs: 15
 
 #amount of epochs that are trained before terminating if there are no improvements in the validation loss, set it to -1 or omit if it shouldn't be used
-early_stopping_patience: 2
+early_stopping_patience: 3
 
 #accumulate the gradient for k amount of batches before making an optimiser step, set it to -1 or omit if it shouldn't be used
-accumulate_grad_batches: 5
+accumulate_grad_batches: 10
 
 #gpus to be used
 gpus: -1
@@ -37,35 +37,47 @@ flavor: ['NuE', 'NuMu', 'NuTau']
 #path to the datasets, format: {flavor}_datasetpaths !!
 
 #/home/wecapstor3/capn/capn108h/l2_labeled/merged
-#old
-# NuE_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22612_merged.db', 
-#                   '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22613_merged.db',
-#                   '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22614_merged.db']
+#new
+NuE_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22612_merged.db', 
+                  '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22613_merged.db',
+                  '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22614_merged.db']
 
-# NuMu_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22644_merged.db', 
-#                     '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22645_merged.db', 
-#                     '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22646_merged.db']
+NuMu_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22644_merged.db', 
+                    '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22645_merged.db', 
+                    '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22646_merged.db']
 
-# NuTau_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22633_merged.db', 
-#                     '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22634_merged.db', 
-#                     '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22635_merged.db']
+NuTau_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22633_merged.db', 
+                    '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22634_merged.db', 
+                    '/home/wecapstor3/capn/capn106h/l2_labeled/merged/22635_merged.db']
 
-# corsikasim_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22615_merged.db']
+corsikasim_datasetpaths: ['/home/wecapstor3/capn/capn106h/l2_labeled/merged/22615_merged.db']
 
-#new datasets
-NuE_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22612_merged.db', 
-                  '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22613_merged.db',
-                  '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22614_merged.db']
+database_lengths:
+  22612: 345900
+  22613: 1602308
+  22614: 5125665
+  22615: 4216310
+  22633: 10173744
+  22634: 1489233
+  22635: 635173
+  22644: 305043
+  22645: 1714343
+  22646: 22151506
 
-NuMu_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22644_merged.db', 
-                    '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22645_merged.db', 
-                    '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22646_merged.db']
+#datasets mergedata 12.06
+# NuE_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22612_merged.db', 
+#                   '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22613_merged.db',
+#                   '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22614_merged.db']
 
-NuTau_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22633_merged.db', 
-                    '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22634_merged.db', 
-                    '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22635_merged.db']
+# NuMu_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22644_merged.db', 
+#                     '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22645_merged.db', 
+#                     '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22646_merged.db']
 
-corsikasim_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22615_merged.db']
+# NuTau_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22633_merged.db', 
+#                     '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22634_merged.db', 
+#                     '/home/wecapstor3/capn/capn108h/l2_labeled/merged/22635_merged.db']
+# 
+# corsikasim_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22615_merged.db']
 
 #Include corsika?
 use_corsika_bool: False 
@@ -76,10 +88,23 @@ training_parameter_inDatabase: False
 
 #List of event-level columns in the input files that should be used and added as attributes on the graph objects.
 addedattributes_trainval: ["first_vertex_energy", "second_vertex_energy", "third_vertex_energy", "visible_track_energy", "visible_spur_energy"]
-addedattributes_test: ['cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'] #exclusive to test graph
+addedattributes_test: ['classification', 'cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'] #exclusive to test graph
 #different to keep the training graph smaller
 
 classifications_to_train_on: [8, 9, 19, 20, 22, 23, 26, 27]
+
+dataset_details:  
+  energy_levels:
+    'high': [22612, 22644, 22635]
+    'mid': [22613, 22645, 22634]
+    'low': [22614, 22646, 22633]
+  ratios: 
+    'high': 1 
+    'mid': 4
+    'low': 10
+  total_events_per_flavor: !!float 1.5e6
+  test_size: 0.1
+
 
 # training paramter + additional attributes = truth
 
@@ -100,4 +125,4 @@ scheduler_config:
 random_state: 42
 
 #specify an actual path, no keyword 'last' or 'best' supported yet 
-# ckpt_path: ''
+# ckpt_path: '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/run_from_2024.07.11_16:34:51_UTC/losses/version_0/checkpoints/DynEdge-epoch=3-val_loss=0.13-train_loss=0.13.ckpt'
