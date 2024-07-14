@@ -16,7 +16,7 @@ from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 from graphnet.models.graphs import KNNGraph
-from graphnet.models.detector.icecube import IceCube86
+from graphnet.models.detector.icecube import IceCube86, CustomIceCube86
 from graphnet.data.dataloader import DataLoader
 from graphnet.models.graphs.nodes.nodes import PercentileClusters
 from graphnet.models import StandardModel, Model
@@ -49,6 +49,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Namespace:
                             help="""Decides whether or not to resume training from a checkpoint. 
                             The path to this checkpoint can be specified in the config file, if not takes the ckpt of the last available run.""", 
                             default=False)
+        parser.add_argument('--dataset_path', type=str, help="Path to the dataset files")
         return parser.parse_args(argv)
 
 def read_yaml(config_path: str) -> dict:
@@ -94,7 +95,6 @@ def create_sub_folder(timestamp: str, base_folder: str, logger: Logger) -> str:
         """
         Creates a sub-folder for the current run.
         """
-        logger = Logger()
         run_name = f"run_from_{timestamp}_UTC"
         sub_folder = os.path.join(base_folder, run_name)
         os.makedirs(sub_folder, exist_ok=True)
@@ -146,6 +146,7 @@ def train_and_evaluate(
               sub_folder: str,
               logger: Logger,
               resumefromckpt: bool = False,
+              path_to_datasets: str = '',
               ) -> pd.DataFrame:
         """
         Reading in nessecary variables from the config file, creating Datasets and Dataloaders.
@@ -164,14 +165,17 @@ def train_and_evaluate(
         TRAINING_PARAMETER = config.get('training_parameter', ['deposited_energy']) #Target label in task
         ADDED_ATTRIBUTES = config.get('addedattributes_trainval', []) #List of event-level columns in the input files that should be used added as attributes on the  graph objects.
         #ensure that training parameter and added attributes are lists
-        if isinstance(TRAINING_PARAMETER, str):
-                TRAINING_PARAMETER = [TRAINING_PARAMETER]
+        
         if isinstance(ADDED_ATTRIBUTES, str):
                 ADDED_ATTRIBUTES = [ADDED_ATTRIBUTES]
 
+        #define name to save model under 
+        name = f"GNN_{config.get('backbone')}_merged{'_'.join(config.get('flavor'))}"
+        modelpath = os.path.join(sub_folder, name)
 
         model_config_path = get_model_config_path(sub_folder=sub_folder, logger=logger) if resumefromckpt else None
         if resumefromckpt and model_config_path:
+        #        logger.info()
                # Load model configuration
                model_config = ModelConfig.load(model_config_path)
 
@@ -187,14 +191,14 @@ def train_and_evaluate(
                 DETECTOR = None 
 
                 if config.get('detector').lower() in ['icecube86', 'icecube']:
-                        DETECTOR = IceCube86()
+                        DETECTOR = CustomIceCube86()
                 else: 
                         raise NotImplementedError("No supported detector found.")
                 #todo Include other detectors
                 
                 FEATURE_NAMES = [*DETECTOR.feature_map()] 
                 #accesses the feature names from the detector class but faster than: feature_names = list(DETECTOR.feature_map().keys())
-                # feature_names = ['dom_x', 'dom_y', 'dom_z', 'dom_time', 'charge', 'rde', 'pmt_area', 'hlc'] #features for the IceCube86 detector 
+                # feature_names = ['dom_x', 'dom_y', 'dom_z', 'dom_time', 'charge', 'rde', 'pmt_area', 'hlc'] #features for the IceCube86 detector and without pmt area for Custom
 
                 BACKBONE_CLASS = None
                 if config.get('backbone').lower() == 'dynedge':
@@ -247,8 +251,6 @@ def train_and_evaluate(
                 )
                 
                 #save model configuration before training so it is accessible even if training doesn't fully complete
-                name = f"GNN_{config.get('backbone')}_merged{'_'.join(config.get('flavor'))}"
-                modelpath = os.path.join(sub_folder, name)
                 model.save_config(f'{modelpath}.yml')
 
         MAX_EPOCHS = config.get('max_epochs', 10)
@@ -257,40 +259,45 @@ def train_and_evaluate(
         
         EARLY_STOPPING_PATIENCE = config.get('early_stopping_patience', -1)
         ACCUMULATE_GRAD_BATCHES = config.get('accumulate_grad_batches', -1)
-        
-        datasetpaths = get_datasetpaths(config=config)
-        #Create Datasets for training, validation and testing 
-        #I am not quite sure about the energy distribution between the created datasets, but should be fully randomised (obviously depends on the random state variable)
-        if config.get('training_parameter_inDatabase', False):
-                TRUTH = TRAINING_PARAMETER + ADDED_ATTRIBUTES
-                training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_traininglabelinDataset(
-                                                                                        path=datasetpaths, 
-                                                                                        graph_definition=graph_definition, 
-                                                                                        features=FEATURE_NAMES, 
-                                                                                        training_target_label=TRAINING_PARAMETER,
-                                                                                        truth=TRUTH,
-                                                                                        random_state=config.get('random_state', 42),
-                )
-        else: 
-               lowercase_trainparam = [x.lower() for x in TRAINING_PARAMETER]
-               if 'deposited_energy' in lowercase_trainparam or 'deposited energy' in lowercase_trainparam:
-                      training_target_label = Custom.CustomLabel_depoEnergy()
-               
-               TRUTH = config.get('addedattributes_trainval')
-               TEST_TRUTH = config.get('addedattributes_test', None)
-               training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_CustomTrainingLabel(
-                                                                                        path=datasetpaths,
-                                                                                        graph_definition=graph_definition, 
-                                                                                        features=FEATURE_NAMES,
-                                                                                        training_target_label=training_target_label,
-                                                                                        truth=TRUTH,
-                                                                                        classifications = config.get('classifications_to_train_on', [8, 9, 19, 20, 22, 23, 26, 27]),
-                                                                                        test_truth=TEST_TRUTH,
-                                                                                        random_state=config.get('random_state', 42),
-                                                                                        logger=logger,
-                )
-               logger.info(f"Detected training_target_label: {training_target_label}")
-               
+        if path_to_datasets:
+                training_dataset, validation_dataset, testing_dataset = torch.load(path_to_datasets)
+        else:
+                datasetpaths = get_datasetpaths(config=config)
+                #Create Datasets for training, validation and testing 
+                #random energy distribution between the created datasets (depends on the random state variable)
+                if config.get('training_parameter_inDatabase', False):
+                        TRUTH = TRAINING_PARAMETER + ADDED_ATTRIBUTES
+                        training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_traininglabelinDataset(
+                                                                                                path=datasetpaths, 
+                                                                                                graph_definition=graph_definition, 
+                                                                                                features=FEATURE_NAMES, 
+                                                                                                training_target_label=TRAINING_PARAMETER,
+                                                                                                truth=TRUTH,
+                                                                                                random_state=config.get('random_state', 42),
+                        )
+                else: 
+                        lowercase_trainparam = [x.lower() for x in TRAINING_PARAMETER]
+                        if 'deposited_energy' in lowercase_trainparam or 'deposited energy' in lowercase_trainparam:
+                                training_target_label = Custom.CustomLabel_depoEnergy()
+                        
+                        TRUTH = config.get('addedattributes_trainval')
+                        TEST_TRUTH = config.get('addedattributes_test', None)
+                        training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_CustomTrainingLabel(
+                                                                                                        path=datasetpaths,
+                                                                                                        graph_definition=graph_definition, 
+                                                                                                        features=FEATURE_NAMES,
+                                                                                                        training_target_label=training_target_label,
+                                                                                                        truth=TRUTH,
+                                                                                                        classifications = config.get('classifications_to_train_on', [8, 9, 19, 20, 22, 23, 26, 27]),
+                                                                                                        test_truth=TEST_TRUTH,
+                                                                                                        config_for_dataset_datails= config.get('dataset_details', {}),
+                                                                                                        root_database_lengths = config.get("database_lengths", {}), 
+                                                                                                        test_size=config.get('dataset_details', {}).get('test_size'),
+                                                                                                        random_state=config.get('random_state', 42),
+                                                                                                        logger=logger,
+                                )
+                        logger.info(f"Detected training_target_label: {training_target_label}")
+                
         logger.info(f"Length of training dataset: {len(training_dataset)}")
         
         #make Dataloaders
@@ -306,7 +313,7 @@ def train_and_evaluate(
         metrics_logger = CSVLogger(save_dir=sub_folder, name="losses", version=f"version_{n}")
 
         # define callbacks
-        callbacks = [ProgressBar()]
+        callbacks = [ProgressBar(refresh_rate=10000)]
         callbacks.append(
                 EarlyStopping(
                 monitor = "val_loss",
@@ -319,7 +326,7 @@ def train_and_evaluate(
                 monitor = "val_loss",
                 mode = "min",
                 every_n_epochs = 1,
-                dirpath = sub_folder + f"/losses/version_{n}_checkpoints",
+                dirpath = sub_folder + f"/losses/version_{n}/checkpoints",
                 filename=f"{model.backbone.__class__.__name__}"
                     + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
                 )
@@ -330,7 +337,7 @@ def train_and_evaluate(
                 monitor = "step",
                 mode = "max",
                 train_time_interval = timedelta(hours=0, minutes=30),
-                dirpath = sub_folder + "/in_between_checkpoints",
+                dirpath = sub_folder + "/in_between_checkpoint",
                 filename = "{epoch}_{step}",
                 )
         )
@@ -341,7 +348,7 @@ def train_and_evaluate(
         'Runfolder': sub_folder.split("/")[-1],
         'Num of max epochs': MAX_EPOCHS,
         'Training paramter': TRAINING_PARAMETER, 
-        'List of other considered truth event labels': TRUTH + config.get('addedattributes_test', None), 
+        'List of other considered truth event labels': config.get('addedattributes_trainval') + config.get('addedattributes_test', None), 
         'Early stopping': EARLY_STOPPING_PATIENCE,
         'resumed from ckpt': resumefromckpt,
         }
@@ -393,8 +400,10 @@ def train_and_evaluate(
 
         #get predictions as a pd.DataFrame
         test_results = model.predict_as_dataframe(dataloader = dataloader_testing_instance,
-                                                additional_attributes = model.target_labels + config.get('addedattributes_trainval')+ config.get('addedattributes_test', None),
-                                                gpus = [0])   
+                                                additional_attributes = model.target_labels + config.get('addedattributes_test', ['classification', 'cosmic_primary_type']),
+                                                gpus = [0]) 
+          
+        logger.info(f"Prediction finished. Writing to hdf5 file...")
 
         #save test results in hdf5 file
         test_results.to_hdf(os.path.join(sub_folder, 'test_results.h5'), key='test_results', mode='w')
@@ -436,6 +445,10 @@ def PlottingRoutine(
         Analysis.plot_resultsashisto(results, subfolder=subfolder, target_label=target_label, backbone=config.get('backbone', 'DynEdge'))
         Analysis.plotEtruevsEreco(results, subfolder=subfolder , normalise=['E_true', 'E_reco', 'nonormalisation'])
         Analysis.plotIQRvsEtrue(results, subfolder=subfolder)
+        for i in config.get('classifications_to_train_on'):
+                Analysis.plotIQR(dataframe=results, savefolder=subfolder, plot_type='energy', classification=i)
+                Analysis.plotIQR(dataframe=results, savefolder=subfolder, plot_type='r', classification=i)
+                Analysis.plotIQR(dataframe=results, savefolder=subfolder, plot_type='z', classification=i)
 
 def get_config_and_sub_folder(
               args: Namespace, 
@@ -462,7 +475,7 @@ def get_config_and_sub_folder(
         
         if resumefromckpt:
                 if config.get('ckpt_path') and config.get('ckpt_path') not in {'last', 'best'}:
-                        sub_folder = os.path.dirname(config_path)
+                        sub_folder = get_lastrun_path(foldername_allruns)
                 else:
                         sub_folder = get_lastrun_path(foldername_allruns)  
                 logger.info(f"Request to resume from checkpoint accepted, using subfolder: {sub_folder} to save files to.")
@@ -483,6 +496,7 @@ def main(argv: Optional[Sequence[str]] = None):
         logger = Logger()
         args = parse_args(argv)
         resumefromckpt = args.resumefromckpt
+        path_to_datasets = args.dataset_path
 
         # Check if the current process is the main process for multi gpu training
         is_main_process = (os.environ.get("LOCAL_RANK", "0") == "0")
@@ -491,7 +505,7 @@ def main(argv: Optional[Sequence[str]] = None):
         
         config, sub_folder = get_config_and_sub_folder(args, resumefromckpt, logger=logger, is_main_process=is_main_process)        
         
-        results = train_and_evaluate(config, sub_folder, resumefromckpt=resumefromckpt, logger=logger)
+        results = train_and_evaluate(config, sub_folder, path_to_datasets=path_to_datasets, resumefromckpt=resumefromckpt, logger=logger)
         if is_main_process:
                 PlottingRoutine(config=config, results=results, subfolder=sub_folder, target_label=config.get('training_parameter', ['first_vertex_energy']), logger=logger)
 
