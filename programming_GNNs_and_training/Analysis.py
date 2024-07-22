@@ -723,21 +723,21 @@ def plotIQRvsEtrue(
             plt.show()
 
 def plot_iqr_vs_true_energy(
-    dataframe: pd.DataFrame, 
+    filtered_dataframe: pd.DataFrame, 
     energy_prediction: np.ndarray, 
     energy_true: np.ndarray, 
     runfolder: str, 
     type_title: str, 
     type_label: str, 
-    scale: List[str], 
     bins: int,
     classification: int,
+    scale: List[str] = ['linear'], 
 ) -> None:
     """
     Plot the interquartile range (IQR) of reconstructed energy vs true energy.
 
     Args:
-        dataframe (pd.DataFrame): Input dataframe with predictions and true values.
+        filtered_dataframe (pd.DataFrame): Input dataframe with predictions and true values.
         energy_prediction (np.ndarray): Predicted energy values.
         energy_true (np.ndarray): True energy values.
         subfolder (str): Directory to save the plots.
@@ -791,8 +791,9 @@ def plot_iqr_vs_true_energy(
         plt.close()
 
 def plot_iqr_vs_variable(
-    dataframe: pd.DataFrame, 
-    energy_prediction: np.ndarray, 
+    filtered_dataframe: pd.DataFrame, 
+    energy_prediction: np.ndarray,  
+    energy_true: np.ndarray, 
     variable: np.ndarray, 
     variable_name: str, 
     runfolder: str, 
@@ -807,7 +808,7 @@ def plot_iqr_vs_variable(
     Plot the interquartile range (IQR) of reconstructed energy vs a given variable.
 
     Args:
-        dataframe (pd.DataFrame): Input dataframe with predictions and true values.
+        filtered_dataframe (pd.DataFrame): Input dataframe with predictions and true values.
         energy_prediction (np.ndarray): Predicted energy values.
         variable (np.ndarray): Variable to plot against.
         variable_name (str): Name of the variable.
@@ -816,19 +817,27 @@ def plot_iqr_vs_variable(
         type_label (str): Label describing the type of particle or event.
         scale (List[str]): List of scales to use for the plot ('linear' and/or 'log').
         bins (int): Number of bins to use for the plot.
-        normalize (bool): Whether to normalize the IQR by the bin center value.
+        normalize (bool): Whether to normalize the IQR by the true energy 
+            (bin center value calculated like plot_iqr_vs_true_energy for comparison purposes)
+
+        method no longer in use
     """
     classification_map = get_classification_map()
     class_name = classification_map.get(classification, "unknown")
     if classification ==-1:
         class_name = "all_considered_class"
 
+    # print(type(variable))
+    # print(variable)
     min_val = np.floor(min(variable))
     max_val = np.ceil(max(variable))
     bins_edges = np.linspace(min_val, max_val, bins)
     bin_centers = (bins_edges[:-1] + bins_edges[1:]) / 2
     
     for s in scale:
+        if s == 'log' and normalize:
+            raise ValueError("Normalization with log scale is not allowed.")
+        
         fig, ax = plt.subplots(figsize=(10, 6))
         all_iqr = []
         for i in range(len(bins_edges) - 1):
@@ -841,46 +850,133 @@ def plot_iqr_vs_variable(
                 else:
                     iqr_value = iqr(energy_prediction[events_mask], rng=(16, 84))
                 if normalize:
-                    all_iqr.append(iqr_value / np.power(10, bin_centers[i]))
+                    energy_true_log = np.log10(energy_true)
+
+                    rounded_log_Etrue_min = np.floor(min(energy_true_log))
+                    rounded_log_Etrue_max = np.ceil(max(energy_true_log))
+                    e_log_bins = np.linspace(rounded_log_Etrue_min, rounded_log_Etrue_max, bins)
+                    e_log_bin_centers = (e_log_bins[:-1] + e_log_bins[1:]) / 2
+                    all_iqr.append(iqr_value / np.power(10, e_log_bin_centers[i]))
                 else:
                     all_iqr.append(iqr_value)
             else:
                 all_iqr.append(np.nan)
 
         plt.plot(bin_centers, all_iqr, marker='o', ls='', color='b')
-        plt.xlabel(f'True Vertex {variable_name} (m)')
-        ylabel = 'IQR of Reconstructed Energy (log GeV - log GeV)' if s == 'log' else 'IQR of Reconstructed Energy (GeV) / True Energy (GeV)'
+        plt.xlabel(f'true vertex {variable_name} (m)')
+
+        if normalize:
+            ylabel = 'IQR of Reconstructed Energy (GeV) / True Energy (GeV)'
+        else:
+            ylabel = 'IQR of Reconstructed Energy'
+
+            if s == 'log':
+                ylabel += ' (log GeV - log GeV)'
+            else:
+                ylabel += ' (GeV)'
         plt.ylabel(ylabel)
         ax.set_yscale('log')
-        plt.title(f'IQR of Reconstructed Energy vs True Vertex {variable_name} for {type_title} ({class_name})')
+
+        title = f'IQR of Reconstructed Energy vs true vertex {variable_name} for {type_title} ({class_name})'
+        if normalize:
+            title += " (normalized to true energy)"
+        plt.title(title)
         plt.grid()
         plt.tight_layout()
         filename = f'IQRvs{variable_name}_{type_label}_{class_name}_{bins}bins_{s}'
+        if normalize:
+            filename += "_normalized"
         os.makedirs(os.path.join(runfolder, 'plots', 'iqr'), exist_ok=True)
         save_path = os.path.join(runfolder, 'plots', 'iqr', filename)
         plt.savefig(save_path)
         plt.show()
         plt.close()
 
-def plotIQR(
+def plot_relerror_vs_variable(
+    filtered_dataframe: pd.DataFrame, 
+    energy_prediction: np.ndarray,  
+    energy_true: np.ndarray, 
+    variable: np.ndarray, 
+    variable_name: str, 
+    runfolder: str, 
+    type_title: str, 
+    type_label: str, 
+    bins: int, 
+    classification: int = -1,
+) -> None:
+    """
+    Plot the interquartile range (IQR) of reconstructed energy vs a given variable.
+
+    Args:
+        filtered_dataframe (pd.DataFrame): Input dataframe with predictions and true values.
+        energy_prediction (np.ndarray): Predicted energy values.
+        variable (np.ndarray): Variable to plot against.
+        variable_name (str): Name of the variable.
+        subfolder (str): Directory to save the plots.
+        type_title (str): Title describing the type of particle or event.
+        type_label (str): Label describing the type of particle or event.
+        scale (List[str]): List of scales to use for the plot ('linear' and/or 'log').
+        bins (int): Number of bins to use for the plot.
+        normalize (bool): Whether to normalize the IQR by the true energy 
+            (bin center value calculated like plot_iqr_vs_true_energy for comparison purposes)
+    """
+    classification_map = get_classification_map()
+    class_name = classification_map.get(classification, "unknown")
+    if classification ==-1:
+        class_name = "all_considered_class"
+
+    # print(type(variable))
+    # print(variable)
+    min_val = np.floor(min(variable))
+    max_val = np.ceil(max(variable))
+    bins_edges = np.linspace(min_val, max_val, bins)
+    bin_centers = (bins_edges[:-1] + bins_edges[1:]) / 2
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    all_relerror = []
+    for i in range(len(bins_edges) - 1):
+        lower, upper = bins_edges[i], bins_edges[i + 1]
+        events_mask = (variable > lower) & (variable < upper)
+        
+        if np.any(events_mask):
+            relerror_values = (np.abs(energy_prediction[events_mask]- energy_true[events_mask])/energy_true[events_mask])
+            all_relerror.append(np.mean(relerror_values))
+        else:
+            all_relerror.append(np.nan)
+
+    plt.plot(bin_centers, all_relerror, marker='o', ls='', color='b')
+    plt.xlabel(f'true vertex {variable_name} (m)')
+    ylabel = 'relative error of reconstructed deposited Eenergy'
+    plt.ylabel(ylabel)
+    ax.set_yscale('log')
+
+    title = f'relative error of reconstructed deposited energy vs true vertex {variable_name} for {type_title} ({class_name})'
+    plt.title(title)
+    plt.grid()
+    plt.tight_layout()
+    filename = f'IQRvs{variable_name}_{type_label}_{class_name}_{bins}bins'
+    os.makedirs(os.path.join(runfolder, 'plots', 'relerror'), exist_ok=True)
+    save_path = os.path.join(runfolder, 'plots', 'relerror', filename)
+    plt.savefig(save_path)
+    plt.show()
+    plt.close()
+
+def plot_IQR_and_relerror(
     dataframe: pd.DataFrame, 
     runfolder: str, 
-    plot_type: str = 'energy', 
-    scale: Union[str, List[str]] = ['linear'],#['linear', 'log'], 
-    normalize_iqrvsvar: bool = True,
+    plot_type: str = 'energy',
     bins: int = 30, 
     cosmic_primary_type: int = -1,
     classification: int = -1, 
 ) -> None:
     """
-    Plot the interquartile range (IQR, here middle 68 percentile) vs the true energy or true vertex position in polar coordinates.
-    Calls plot_iqr_vs_variable or plot_iqr_vs_true_energy for actual plotting functionality 
+    Plot the interquartile range (IQR, here middle 68 percentile) vs the true energy or the relative error vs true vertex position in polar coordinates.
+    Calls plot_relerror_vs_variable or plot_iqr_vs_true_energy for actual plotting functionality 
     
     Args:
         dataframe (pd.DataFrame): Input dataframe with predictions and true values.
         subfolder (str): Directory to save the plots.
         plot_type (str): Type of plot ('energy', 'r', 'z').
-        scale (Union[str, List[str]]): Scale to use for the plot ('linear' and/or 'log').
         bins (int): Number of bins to use for the plot.
         cosmic_primary_type (int): Cosmic primary type to filter by (absolute value).
     """
@@ -892,9 +988,6 @@ def plotIQR(
     }
     
     type_label, type_title = type_labels.get(cosmic_primary_type, ("allflavors", "all flavors"))
-    
-    if isinstance(scale, str):
-        scale = [scale]
         
     prediction = dataframe.keys()[0]  # Should be energy_pred
     truth = dataframe.keys()[1]  # Should be training target label
@@ -905,6 +998,7 @@ def plotIQR(
 
 
     if cosmic_primary_type == -1:
+        filtered_dataframe = dataframe
         energy_prediction = dataframe[prediction]
         energy_true = dataframe[truth]
         vertex_x = dataframe['first_vertex_x']
@@ -921,13 +1015,13 @@ def plotIQR(
         vertex_z = filtered_dataframe['first_vertex_z']
 
     vertex_r = np.sqrt(vertex_x**2 + vertex_y**2)
-
+    
     if plot_type == 'energy':
-        plot_iqr_vs_true_energy(dataframe, energy_prediction, energy_true, runfolder, type_title, type_label, scale, bins, classification)
-    elif plot_type == 'r':
-        plot_iqr_vs_variable(dataframe, energy_prediction, vertex_r, 'r', runfolder, type_title, type_label, scale, bins, classification, normalize_iqrvsvar)
+        plot_iqr_vs_true_energy(filtered_dataframe, energy_prediction, energy_true, runfolder, type_title, type_label, bins, classification)
+    if plot_type == 'r':
+        plot_relerror_vs_variable(filtered_dataframe, energy_prediction, energy_true, vertex_r, 'r', runfolder, type_title, type_label, bins, classification)
     elif plot_type == 'z':
-        plot_iqr_vs_variable(dataframe, energy_prediction, vertex_z, 'z', runfolder, type_title, type_label, scale, bins, classification, normalize_iqrvsvar)
+        plot_relerror_vs_variable(filtered_dataframe, energy_prediction, energy_true, vertex_z, 'z', runfolder, type_title, type_label, bins, classification)
 
 def AnalyiseDatasetEnergyStructure(
         db: Union[str, List[str]],
@@ -1009,15 +1103,15 @@ def DatasetEnergyStructureAnalysisCalls(dbversion: str = 'new', scale: str='log'
 def PlottingCalls():
     sub_folder = '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/run_from_2024.07.11_16:34:51_UTC'
     df = loadresults_from_subfolder(subfolder=sub_folder)
-    plotEtruevsEreco(df, subfolder=sub_folder, normalise=['E_true', 'E_reco', 'notnorm'])
-    plot_lossesandlearningrate(sub_folder)
-    plot_resultsashisto(df, subfolder=sub_folder, target_label=['deposited_energy'])
+    # plotEtruevsEreco(df, subfolder=sub_folder, normalise=['E_true', 'E_reco', 'notnorm'])
+    # plot_lossesandlearningrate(sub_folder)
+    # plot_resultsashisto(df, subfolder=sub_folder, target_label=['deposited_energy'])
     classifications = [8, 9, 19, 20, 22, 23, 26, 27]
 
     for i in classifications:
-        plotIQR(dataframe=df, runfolder=sub_folder, plot_type='energy', classification=i)
-        plotIQR(dataframe=df, runfolder=sub_folder, plot_type='r', classification=i)
-        plotIQR(dataframe=df, runfolder=sub_folder, plot_type='z', classification=i)  
+        plot_IQR_and_relerror(dataframe=df, runfolder=sub_folder, plot_type='energy', classification=i)
+        plot_IQR_and_relerror(dataframe=df, runfolder=sub_folder, plot_type='r', classification=i)
+        plot_IQR_and_relerror(dataframe=df, runfolder=sub_folder, plot_type='z', classification=i)  
 
 def main():
     PlottingCalls()
