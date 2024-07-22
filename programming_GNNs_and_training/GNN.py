@@ -3,7 +3,8 @@ from argparse import ArgumentParser, Namespace
 from typing import Sequence, Optional, List, Union, Tuple
 import os
 from glob import glob
-from time import gmtime, strftime
+import shutil
+from time import time, gmtime, strftime
 from datetime import timedelta
 from termcolor import colored
 import yaml
@@ -18,6 +19,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from graphnet.models.graphs import KNNGraph
 from graphnet.models.detector.icecube import IceCube86, CustomIceCube86
 from graphnet.data.dataloader import DataLoader
+from graphnet.data.dataset import EnsembleDataset
 from graphnet.models.graphs.nodes.nodes import PercentileClusters
 from graphnet.models import StandardModel, Model
 from graphnet.models.gnn import DynEdge
@@ -28,6 +30,7 @@ from graphnet.utilities.config import ModelConfig
 from graphnet.training.callbacks import ProgressBar
 
 import CustomAdditionsforGNNTraining as Custom
+from CustomSQL_dataset import CustomSQLiteDataset 
 import Analysis
 
 # Environment Configuration
@@ -44,12 +47,25 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Namespace:
         Method to parse arguments as a command line interface.
         """
         parser = ArgumentParser()
-        parser.add_argument('--config_path', type=str, help="Path to the config file")
-        parser.add_argument('--resumefromckpt', type=bool, 
+        parser.add_argument('--config_path', 
+                        type=str, 
+                        help="Path to the config file",
+        )
+        parser.add_argument('--resumefromckpt', 
+                            type=bool, 
                             help="""Decides whether or not to resume training from a checkpoint. 
-                            The path to this checkpoint can be specified in the config file, if not takes the ckpt of the last available run.""", 
-                            default=False)
-        parser.add_argument('--dataset_path', type=str, help="Path to the dataset files")
+                            The path to this checkpoint can be specified in the config file, 
+                            if not takes the ckpt of the last available run.""", 
+                            default=False,
+        )
+        # parser.add_argument('--dataset_path', type=str, help="Path to the dataset files")
+        parser.add_argument('--use_tmpdir', 
+                            type=bool, 
+                            help="""Whether or not to use the high bandwidth, 
+                            low latency TMPDIR of the gpu node for accessing the databases""", 
+                            default=False,
+        )
+
         return parser.parse_args(argv)
 
 def read_yaml(config_path: str) -> dict:
@@ -91,11 +107,10 @@ def save_params(params: dict, basefolder: str, filename: str = 'gnn_params') -> 
         with open(temp, mode) as f:
             f.write(csv_string)       
 
-def create_sub_folder(timestamp: str, base_folder: str, logger: Logger) -> str:
+def create_sub_folder(run_name: str, base_folder: str, logger: Logger) -> str:
         """
         Creates a sub-folder for the current run.
         """
-        run_name = f"run_from_{timestamp}_UTC"
         sub_folder = os.path.join(base_folder, run_name)
         os.makedirs(sub_folder, exist_ok=True)
         logger.info(f"Subfolder created: {sub_folder}")
@@ -146,7 +161,8 @@ def train_and_evaluate(
               sub_folder: str,
               logger: Logger,
               resumefromckpt: bool = False,
-              path_to_datasets: str = '',
+              use_tmpdir: bool = True,
+        #       path_to_datasets: str = '',
               ) -> pd.DataFrame:
         """
         Reading in nessecary variables from the config file, creating Datasets and Dataloaders.
@@ -187,7 +203,6 @@ def train_and_evaluate(
                FEATURE_NAMES = model._graph_definition._input_feature_names
 
         else: 
-                #Maybe add support custom IceCube detector class without unnecessary pmt area
                 DETECTOR = None 
 
                 if config.get('detector').lower() in ['icecube86', 'icecube']:
@@ -259,10 +274,39 @@ def train_and_evaluate(
         
         EARLY_STOPPING_PATIENCE = config.get('early_stopping_patience', -1)
         ACCUMULATE_GRAD_BATCHES = config.get('accumulate_grad_batches', -1)
-        if path_to_datasets:
-                training_dataset, validation_dataset, testing_dataset = torch.load(path_to_datasets)
+
+        lowercase_trainparam = [x.lower() for x in TRAINING_PARAMETER]
+        if 'deposited_energy' in lowercase_trainparam or 'deposited energy' in lowercase_trainparam:
+                training_target_label = Custom.CustomLabel_depoEnergy()
+
+        if use_tmpdir:
+                tmpdir = os.environ["TMPDIR"]
+                
+                db_files = []
+                for root, _, files in os.walk(tmpdir):
+                        for file in files:
+                                if file.endswith(".db"):
+                                        db_files.append(os.path.join(root, file))
+                logger.info(f"Selection database folder contents: {db_files}")
+                        
+                TRUTH = config.get('addedattributes_trainval', ["first_vertex_energy", "second_vertex_energy", "third_vertex_energy", "visible_track_energy", "visible_spur_energy"])
+                TEST_TRUTH = config.get('addedattributes_test', ['classification', 'cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'])
+
+                training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_CustomTrainingLabel_splitDatabases(
+                                                                                                path=db_files,
+                                                                                                graph_definition=graph_definition, 
+                                                                                                features=FEATURE_NAMES,
+                                                                                                truth=TRUTH,
+                                                                                                training_target_label=training_target_label,
+                                                                                                test_truth=TEST_TRUTH,
+                                                                                                logger=logger,
+                )
+                logger.info(f"Detected training_target_label: {training_target_label}")
+
+                # training_dataset, validation_dataset, testing_dataset = torch.load(path_to_datasets)
         else:
                 datasetpaths = get_datasetpaths(config=config)
+
                 #Create Datasets for training, validation and testing 
                 #random energy distribution between the created datasets (depends on the random state variable)
                 if config.get('training_parameter_inDatabase', False):
@@ -276,10 +320,7 @@ def train_and_evaluate(
                                                                                                 random_state=config.get('random_state', 42),
                         )
                 else: 
-                        lowercase_trainparam = [x.lower() for x in TRAINING_PARAMETER]
-                        if 'deposited_energy' in lowercase_trainparam or 'deposited energy' in lowercase_trainparam:
-                                training_target_label = Custom.CustomLabel_depoEnergy()
-                        
+                                               
                         TRUTH = config.get('addedattributes_trainval')
                         TEST_TRUTH = config.get('addedattributes_test', None)
                         training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_CustomTrainingLabel(
@@ -295,15 +336,16 @@ def train_and_evaluate(
                                                                                                         test_size=config.get('dataset_details', {}).get('test_size'),
                                                                                                         random_state=config.get('random_state', 42),
                                                                                                         logger=logger,
+                                                                                                        save_database_yaml = config.get('save_database_yaml', False),
                                 )
                         logger.info(f"Detected training_target_label: {training_target_label}")
                 
         logger.info(f"Length of training dataset: {len(training_dataset)}")
         
         #make Dataloaders
-        dataloader_training_instance = DataLoader(training_dataset, **config.get('dataloader_config', {'batch_size': 8, 'num_workers': 32}), shuffle=True)
-        dataloader_validation_instance = DataLoader(validation_dataset, **config.get('dataloader_config', {'batch_size': 8, 'num_workers': 32}))
-        dataloader_testing_instance = DataLoader(testing_dataset, **config.get('dataloader_config', {'batch_size': 8, 'num_workers': 32}))
+        dataloader_training_instance = DataLoader(training_dataset, **config.get('dataloader_config', {'batch_size': 8, 'num_workers': 16}), shuffle=True)
+        dataloader_validation_instance = DataLoader(validation_dataset, **config.get('dataloader_config', {'batch_size': 8, 'num_workers': 16}))
+        dataloader_testing_instance = DataLoader(testing_dataset, **config.get('dataloader_config', {'batch_size': 8, 'num_workers': 16}))
 
         logger.info(f"Size of training dataloader: {len(dataloader_training_instance)}")
         #Loss Logger
@@ -313,7 +355,7 @@ def train_and_evaluate(
         metrics_logger = CSVLogger(save_dir=sub_folder, name="losses", version=f"version_{n}")
 
         # define callbacks
-        callbacks = [ProgressBar(refresh_rate=10000)]
+        callbacks = [ProgressBar(refresh_rate=config.get('refresh_rate', 10000))]
         callbacks.append(
                 EarlyStopping(
                 monitor = "val_loss",
@@ -353,6 +395,7 @@ def train_and_evaluate(
         'resumed from ckpt': resumefromckpt,
         }
         params.update(config.get('dataloader_config', {'batch_size': 8, 'num_workers': 32}))
+        params.update({"Slurm job id": int(os.environ.get("SLURM_JOB_ID"))})
         BASEFOLDER = config.get('basefolder')
         save_params(params=params, basefolder=BASEFOLDER)
 
@@ -360,7 +403,7 @@ def train_and_evaluate(
         fit_kwargs = {
                 'train_dataloader': dataloader_training_instance,
                 'val_dataloader': dataloader_validation_instance,
-                'distribution_strategy': "ddp",
+                'distribution_strategy': config.get('distribution_strategy', "auto"),
                 'logger': metrics_logger,
                 'max_epochs': MAX_EPOCHS,
                 'callbacks': callbacks,
@@ -454,7 +497,6 @@ def get_config_and_sub_folder(
               args: Namespace, 
               resumefromckpt: bool,
               logger: Logger,
-              is_main_process: bool = True, 
               foldername_allruns: str = 'runs_and_saved_models',
               ) -> Tuple[dict, str]:
         """
@@ -475,40 +517,94 @@ def get_config_and_sub_folder(
         
         if resumefromckpt:
                 if config.get('ckpt_path') and config.get('ckpt_path') not in {'last', 'best'}:
-                        sub_folder = get_lastrun_path(foldername_allruns)
+                        import re
+                        # Regular expression to match the path up to "run_from_*"
+                        pattern = r'(.*/(?:run_from_[^/]+|run_jobid[^/]+))'
+
+                        # Search for the pattern in the path
+                        sub_folder = re.search(pattern, config.get('ckpt_path')).group(1)
                 else:
                         sub_folder = get_lastrun_path(foldername_allruns)  
                 logger.info(f"Request to resume from checkpoint accepted, using subfolder: {sub_folder} to save files to.")
         else:
-                if is_main_process:
-                        base_folder = config.get("basefolder")
-                        timestamp = strftime("%Y.%m.%d_%H:%M:%S", gmtime())
-                        sub_folder = create_sub_folder(timestamp=timestamp, base_folder=base_folder, logger=logger)                        
+                run_name = f"run_jobid_{int(os.environ.get('SLURM_JOB_ID'))}"
+                basefolder = config.get('basefolder', '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/')
+                path_to_check = os.path.join(basefolder, run_name)
+
+                if os.path.exists(path=path_to_check):
+                        sub_folder=path_to_check
+                        logger.info(f"Subfolder {sub_folder} already exists.")
+
+                else:
+                        sub_folder = create_sub_folder(run_name=run_name, base_folder=basefolder, logger=logger) 
                         # Save the YAML config file into subfolder if not resuming from checkpoint
                         save_yaml(config, os.path.join(sub_folder, 'config.yaml'))
-                else:
-                       sub_folder = get_lastrun_path(foldername_allruns)
-                       logger.info("This is not the main process. sub_folder has been initialize to the last available subfolder in hopes that it corresponds to the one created during the main process.")
-
+         
         return config, sub_folder
+
+def copy_selection_databases(config) -> str:
+        # Get the root folder for the selection databases from the config, or use the default path.
+        selection_database_root_folder = config.get('selection_database_root_folder', '/home/wecapstor3/capn/capn108h/selection_databases/allflavor_classif8_9_19_20_22_23_26_27')
+
+        # Copy selection databases to tmpdir for quicker accessibility.
+        tmpdir = os.environ.get("TMPDIR")
+        if not tmpdir:
+                raise EnvironmentError("TMPDIR environment variable is not set.")
+
+        selection_database_folder = os.path.join(tmpdir, "selection_databases")
+        print(f"Copying train, val, and test selection databases from {selection_database_root_folder} to {selection_database_folder} ...")
+
+        # Measure the time taken to copy the files.
+        t1 = time()
+
+        # Create the destination directory if it doesn't exist.
+        os.makedirs(selection_database_folder, exist_ok=True)
+
+        # Copy the entire directory tree.
+        shutil.copytree(src=selection_database_root_folder, dst=selection_database_folder, dirs_exist_ok=True)
+
+        t2 = time()
+        copy_time = timedelta(seconds=(t2 - t1))
+        print(f"Copying train, val and test selection databases done after {copy_time}.")
+
+        return selection_database_folder
 
 def main(argv: Optional[Sequence[str]] = None):
         logger = Logger()
         args = parse_args(argv)
         resumefromckpt = args.resumefromckpt
-        path_to_datasets = args.dataset_path
+        use_tmpdir = args.use_tmpdir
 
         # Check if the current process is the main process for multi gpu training
-        is_main_process = (os.environ.get("LOCAL_RANK", "0") == "0")
-        localrank = os.getenv("LOCAL_RANK")
+        rank = int(os.environ["SLURM_PROCID"])
+        is_main_process = (rank == 0)
+        print(f"RANK: {rank}")
+        localrank = os.environ.get("LOCAL_RANK")
         print(f"LOCAL_RANK: {localrank}")
-        
-        config, sub_folder = get_config_and_sub_folder(args, resumefromckpt, logger=logger, is_main_process=is_main_process)        
-        
-        results = train_and_evaluate(config, sub_folder, path_to_datasets=path_to_datasets, resumefromckpt=resumefromckpt, logger=logger)
-        if is_main_process:
-                PlottingRoutine(config=config, results=results, subfolder=sub_folder, target_label=config.get('training_parameter', ['first_vertex_energy']), logger=logger)
 
+        print(f"ismain?: {is_main_process} (based on rank==0)")
+
+        config, sub_folder = get_config_and_sub_folder(args, 
+                                                        resumefromckpt, 
+                                                        logger=logger, 
+                                                        # is_main_process=is_main_process
+        )    
+        
+        results = train_and_evaluate(config, 
+                                        sub_folder, 
+                                        logger=logger, 
+                                        resumefromckpt=resumefromckpt, 
+                                        use_tmpdir=use_tmpdir, 
+        )
+
+        if is_main_process:
+                PlottingRoutine(config=config, 
+                                results=results, 
+                                subfolder=sub_folder, 
+                                target_label=config.get('training_parameter', ['deposited_energy']), 
+                                logger=logger
+                )
+        
 if __name__ == "__main__":
         main()    
 
