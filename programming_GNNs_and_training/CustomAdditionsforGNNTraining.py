@@ -393,7 +393,7 @@ def GetTrainingLabelEntries(
 # the data is split into train, val and test sets
 def CreateCustomDatasets_traininglabelinDataset(
                         path: Union[str, List[str]], 
-                        graph_definition, 
+                        graph_definition: GraphDefinition, 
                         features: List[str], 
                         truth: Union[str, List[str]], 
                         training_target_label: Union[str, List[str]] = 'first_vertex_energy',
@@ -482,7 +482,7 @@ def CreateCustomDatasets_traininglabelinDataset(
 
 def CreateCustomDatasets_CustomTrainingLabel(
                         path: Union[str, List[str]], 
-                        graph_definition, 
+                        graph_definition: GraphDefinition, 
                         features: List[str], 
                         truth: Union[str, List[str]], 
                         classifications: Union[int, List[int]] = [8, 9, 19, 20, 22, 23, 26, 27],
@@ -497,6 +497,7 @@ def CreateCustomDatasets_CustomTrainingLabel(
                         test_truth: Union[str, List[str]] =  ['cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'],
                         logger: Logger = None, 
                         threshold: int = 10,
+                        save_database_yaml: bool = False,
                         ) -> Tuple[EnsembleDataset, EnsembleDataset, EnsembleDataset]:
     """
     Creates custom training, validation, and testing datasets from SQLite databases.
@@ -519,6 +520,7 @@ def CreateCustomDatasets_CustomTrainingLabel(
     - test_truth: Optional List of event level truths to add to the graph of only the testing dataset. list elements should be exclusive (no overlap with truth)
     - logger: Optional logger object for logging messages.
     - threshold: Threshold value for deposited energy columns to filter events.
+    - save_database_yaml: Whether to save the yaml file for the databases or not
 
     Returns:
     - Tuple containing three EnsembleDataset objects:
@@ -610,7 +612,7 @@ def CreateCustomDatasets_CustomTrainingLabel(
         elif database_id in energy_levels['low']:
             num_events = num_low_events
         else:
-            num_events = total_events_per_flavor  # for background, just take the same amount as for each flavor
+            num_events = 3* total_events_per_flavor  # for background, just take the same amount as for each flavor
         
         # print(hdf5_filepath)
         # print('\n')
@@ -672,11 +674,23 @@ def CreateCustomDatasets_CustomTrainingLabel(
 
         testing_dataset = CustomSQLiteDataset(path=singledataset, **test_kwargs, selection=test_selection)
         testing_dataset.add_label(training_target_label)
-        renorm_sim_weight = renormalized_sim_weight(db_size=root_database_length, sel_size=len(test_selection))
-        testing_dataset.add_label(renorm_sim_weight)
         testingdatasets.append(testing_dataset)
         print(f'id {database_id} Length test selection {len(test_selection)}')
-    
+
+        if(save_database_yaml):
+            yaml_save_path = '/home/saturn/capn/capn108h/programming_GNNs_and_training/datasets'
+            dataset_types = ["train", "val", "test"]
+            datasets = {
+                "train": training_dataset,
+                "val": validation_dataset,
+                "test": testing_dataset
+            }
+
+            for dataset_type in dataset_types:
+                dir_path = os.path.join(yaml_save_path, f"{dataset_type}_dataset_configs")
+                os.makedirs(dir_path, exist_ok=True)
+                datasets[dataset_type].save_config(os.path.join(dir_path, f"{database_id}_{dataset_type}_config.yml"))
+
 
     training_ensemble = EnsembleDataset(trainingdatasets)
     print(f"Length training ensemble: {len(training_ensemble)}")
@@ -697,6 +711,86 @@ def CreateCustomDatasets_CustomTrainingLabel(
     if not os.path.exists(ensemble_path):
         torch.save([training_ensemble, validation_ensemble, testing_ensemble], ensemble_path)
         logger.info(f"New Total Ensemble saved to: {ensemble_path}")
+
+    return training_ensemble, validation_ensemble, testing_ensemble
+
+def CreateCustomDatasets_CustomTrainingLabel_splitDatabases(
+                        path: Union[str, List[str]], 
+                        graph_definition, 
+                        features: List[str], 
+                        truth: Union[str, List[str]],
+                        training_target_label: Label = CustomLabel_depoEnergy(),
+                        # deposited_energy_cols: List[str] = ["first_vertex_energy", "second_vertex_energy", "third_vertex_energy", "visible_track_energy", "visible_spur_energy"],
+                        pulsemap: Union[str, List[str]] = 'InIceDSTPulses', 
+                        truth_table: str = 'truth',
+                        test_truth: Union[str, List[str]] =  ['cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'],
+                        logger: Logger = None, 
+                        ) -> Tuple[EnsembleDataset, EnsembleDataset, EnsembleDataset]:
+    """
+    Creates custom training, validation, and testing datasets from SQLite databases.
+
+    Parameters:
+    - path: File path or list of file paths to SQLite database(s) containing data. Must be {databaseid}_{train,val,test}_selection.db
+    - graph_definition: Definition of graph structure.
+    - features: List of features to include in the datasets.
+    - truth: List of event level truths to add to the graph of all datasets (train, val and test).
+    - training_target_label: Target label or feature to train on (e.g., energy deposition).
+    - deposited_energy_cols: List of columns representing deposited energy to consider for thresholding.
+    - pulsemap: Name or list of names of pulsemap tables in the databases.
+    - truth_table: Table name in the databases containing truth information.
+    - test_truth: Optional List of event level truths to add to the graph of only the testing dataset. list elements should be exclusive (no overlap with truth)
+    - logger: Optional logger object for logging messages.
+
+    Returns:
+    - Tuple containing three EnsembleDataset objects:
+        - Training dataset.
+        - Validation dataset.
+        - Testing dataset.
+    """
+    if isinstance(path, str):
+        path = [path]
+
+    trainval_kwargs = dict(
+                pulsemaps=pulsemap,
+                features=features,
+                truth=truth, 
+                truth_table=truth_table,
+                graph_definition=graph_definition,
+            )
+    test_kwargs = dict(
+                pulsemaps=pulsemap,
+                features=features,
+                truth=truth + test_truth, 
+                truth_table=truth_table,
+                graph_definition=graph_definition,
+            )
+    
+    trainingdatasets = []
+    validationdatasets = []
+    testingdatasets = []
+
+    for singledataset in path:
+        if "train_selection" in singledataset:
+            training_dataset = CustomSQLiteDataset(path=singledataset, **trainval_kwargs)
+            training_dataset.add_label(training_target_label)
+            trainingdatasets.append(training_dataset)
+        elif "val_selection" in singledataset:
+            validation_dataset = CustomSQLiteDataset(path=singledataset, **trainval_kwargs)
+            validation_dataset.add_label(training_target_label)
+            validationdatasets.append(validation_dataset)
+        elif "test_selection" in singledataset:
+            testing_dataset = CustomSQLiteDataset(path=singledataset, **test_kwargs)
+            testing_dataset.add_label(training_target_label)
+            testingdatasets.append(testing_dataset)
+
+    training_ensemble = EnsembleDataset(trainingdatasets)
+    print(f"Length training ensemble: {len(training_ensemble)}")
+
+    validation_ensemble = EnsembleDataset(validationdatasets)
+    print(f"Length validation ensemble: {len(validation_ensemble)}")
+
+    testing_ensemble = EnsembleDataset(testingdatasets)
+    print(f"Length testing ensemble: {len(testing_ensemble)}")
 
     return training_ensemble, validation_ensemble, testing_ensemble
 
