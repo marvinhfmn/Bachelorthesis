@@ -15,7 +15,7 @@ node_definition:
 
 dataloader_config:
   batch_size: 8 #size of one batch
-  num_workers: 32 #number of workers for dataloader 
+  num_workers: 8 #number of workers for dataloader, should correspond to int(os.environ["SLURM_CPUS_PER_TASK"])
 
 #amount of epochs to be trained for
 max_epochs: 15
@@ -28,6 +28,11 @@ accumulate_grad_batches: 10
 
 #gpus to be used
 gpus: -1
+
+#
+distribution_strategy: ddp
+
+refresh_rate: 5000
 
 #defining what flavor of neutrinos should be trained on 
 flavor: ['NuE', 'NuMu', 'NuTau']
@@ -80,7 +85,12 @@ database_lengths:
 # corsikasim_datasetpaths: ['/home/wecapstor3/capn/capn108h/l2_labeled/merged/22615_merged.db']
 
 #Include corsika?
-use_corsika_bool: False 
+use_corsika_bool: False
+
+# if use tmpdir
+selection_database_root_folder: '/home/wecapstor3/capn/capn108h/selection_databases/allflavor_classif8_9_19_20_22_23_26_27'
+
+save_database_yaml: False
 
 #parameter to train on (also target label)
 training_parameter: ['deposited_energy']
@@ -90,6 +100,9 @@ training_parameter_inDatabase: False
 addedattributes_trainval: ["first_vertex_energy", "second_vertex_energy", "third_vertex_energy", "visible_track_energy", "visible_spur_energy"]
 addedattributes_test: ['classification', 'cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'] #exclusive to test graph
 #different to keep the training graph smaller
+
+
+# training paramter + additional attributes = truth
 
 classifications_to_train_on: [8, 9, 19, 20, 22, 23, 26, 27]
 
@@ -106,7 +119,6 @@ dataset_details:
   test_size: 0.1
 
 
-# training paramter + additional attributes = truth
 
 optimizer_kwargs:
   lr: !!float 1e-4 #learning rate
@@ -124,5 +136,5 @@ scheduler_config:
 #random state variable, useful to recreate train, val and test datasets (see CustomAdditionsforGNNTraining.CreateCustomDatasets)
 random_state: 42
 
-#specify an actual path, no keyword 'last' or 'best' supported yet 
-# ckpt_path: '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/run_from_2024.07.11_16:34:51_UTC/losses/version_0/checkpoints/DynEdge-epoch=3-val_loss=0.13-train_loss=0.13.ckpt'
+#specify an actual path, no keyword 'last' or 'best' explicitly supported yet 
+ckpt_path: '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/run_jobid_862299/losses/version_1/checkpoints/DynEdge-epoch=9-val_loss=0.10-train_loss=0.10.ckpt'
