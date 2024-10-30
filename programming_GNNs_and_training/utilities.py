@@ -615,14 +615,26 @@ def CreateCustomDatasets_CustomTrainingLabel_splitDatabases(
             testing_dataset.add_label(training_target_label)
             testingdatasets.append(testing_dataset)
 
-    training_ensemble = EnsembleDataset(trainingdatasets)
-    print(f"Length training ensemble: {len(training_ensemble)}")
+    if len(trainingdatasets) > 0:
+        training_ensemble = EnsembleDataset(trainingdatasets)
+        print(f"Length training ensemble: {len(training_ensemble)}")
+    else:
+        training_ensemble = []
+        print(f"Length of training datasets is {len(trainingdatasets)}")
+    
+    if len(validationdatasets) > 0:
+        validation_ensemble = EnsembleDataset(validationdatasets)
+        print(f"Length validation ensemble: {len(validation_ensemble)}")
+    else:
+        validation_ensemble = []
+        print(f"Length of validation datasets is {len(validationdatasets)}")
 
-    validation_ensemble = EnsembleDataset(validationdatasets)
-    print(f"Length validation ensemble: {len(validation_ensemble)}")
-
-    testing_ensemble = EnsembleDataset(testingdatasets)
-    print(f"Length testing ensemble: {len(testing_ensemble)}")
+    if len(testingdatasets) > 0:
+        testing_ensemble = EnsembleDataset(testingdatasets)
+        print(f"Length testing ensemble: {len(testing_ensemble)}")
+    else:
+        testing_ensemble = []
+        print(f"Length of testing datasets is {len(testingdatasets)}")
 
     return training_ensemble, validation_ensemble, testing_ensemble
 
@@ -927,7 +939,7 @@ def get_config_and_sub_folder(
                 if config.get('ckpt_path') and config.get('ckpt_path') not in {'last', 'best'}:
                         import re
                         # Regular expression to match the path up to "run_from_*"
-                        pattern = r'(.*/(?:run_from_[^/]+|run_jobid[^/]+))'
+                        pattern = r'(.*/(?:run_from_[^/]+|run_jobid[^/]+|run_[^/]+))'
 
                         # Search for the pattern in the path
                         sub_folder = re.search(pattern, config.get('ckpt_path')).group(1)
@@ -990,9 +1002,9 @@ def PlottingRoutine(
         Analysis.plotEtruevsEreco(results, subfolder=subfolder , normalise=['E_true', 'E_reco', 'nonormalisation'])
         Analysis.plotIQRvsEtrue(results, subfolder=subfolder)
         for i in config.get('classifications_to_train_on', [8, 9, 19, 20, 22, 23, 26, 27]):
-                Analysis.plot_IQR_and_relerror(dataframe=results, savefolder=subfolder, plot_type='energy', classification=i)
-                Analysis.plot_IQR_and_relerror(dataframe=results, savefolder=subfolder, plot_type='r', classification=i)
-                Analysis.plot_IQR_and_relerror(dataframe=results, savefolder=subfolder, plot_type='z', classification=i)
+                Analysis.plot_IQR_and_relerror(dataframe=results, runfolder=subfolder, plot_type='energy', classification=i)
+                Analysis.plot_IQR_and_relerror(dataframe=results, runfolder=subfolder, plot_type='r', classification=i)
+                Analysis.plot_IQR_and_relerror(dataframe=results, runfolder=subfolder, plot_type='z', classification=i)
 
 def GNNTrainingwithmodelfromckpt():
     """

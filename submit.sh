@@ -1,10 +1,10 @@
 #!/bin/bash -l
 #
-#SBATCH --job-name=GraphNetTraining
+#SBATCH --job-name=EnergyReco
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:rtx3080:4
+#SBATCH --gres=gpu:rtx3080:6
 #SBATCH --partition rtx3080
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=6
 #SBATCH --time=24:00:00
 #SBATCH --output=/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_submit_outputs/%x_%j.out  
 #SBATCH --error=/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_submit_outputs/%x_%j.out   # Redirect both stdout and stderr
@@ -21,7 +21,7 @@ conda activate graphnet_cuda
 export NCCL_DEBUG=INFO
 export PYTHONFAULTHANDLER=1
 
-echo $TMPDIR
+# echo $TMPDIR
 
 SRC_DIR="/home/woody/capn/$USER"
 NUM_PROCS=4
@@ -44,3 +44,11 @@ ls -R "$TMPDIR"
 # srun python3 /home/saturn/capn/capn108h/programming_GNNs_and_training/GNN.py --config /home/saturn/capn/capn108h/programming_GNNs_and_training/config.yaml  --use_tmpdir  
 
 srun python3 /home/saturn/capn/capn108h/programming_GNNs_and_training/GNN.py --config /home/saturn/capn/capn108h/programming_GNNs_and_training/config.yaml --resumefromckpt --use_tmpdir 
+
+# SECONDS=0
+# while [ "$SECONDS" -le 86400 ]; do
+#     sleep 60
+# done
+
+# cd ${SLURM_SUBMIT_DIR}
+# sbatch $0

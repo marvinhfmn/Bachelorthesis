@@ -3,11 +3,8 @@ from argparse import ArgumentParser, Namespace
 from typing import Sequence, Optional, List, Union, Tuple
 import os
 from glob import glob
-import shutil
-from time import time, gmtime, strftime
+import re
 from datetime import timedelta
-from termcolor import colored
-import yaml
 import pandas as pd
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -19,7 +16,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from graphnet.models.graphs import KNNGraph
 from graphnet.models.detector.icecube import IceCube86, CustomIceCube86
 from graphnet.data.dataloader import DataLoader
-from graphnet.data.dataset import EnsembleDataset
+# from graphnet.data.dataset import EnsembleDataset
 from graphnet.models.graphs.nodes.nodes import PercentileClusters
 from graphnet.models import StandardModel, Model
 from graphnet.models.gnn import DynEdge
@@ -30,7 +27,7 @@ from graphnet.utilities.config import ModelConfig
 from graphnet.training.callbacks import ProgressBar
 
 import CustomAdditionsforGNNTraining as Custom
-from CustomSQL_dataset import CustomSQLiteDataset 
+import utilities as utils
 import Analysis
 
 # Environment Configuration
@@ -49,114 +46,58 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Namespace:
         parser = ArgumentParser()
         parser.add_argument('--config_path', 
                         type=str, 
+                        default="/home/saturn/capn/capn108h/programming_GNNs_and_training/config.yaml",
                         help="Path to the config file",
         )
         parser.add_argument('--resumefromckpt', 
-                            type=bool, 
+                            default=False,
+                            action="store_true",
                             help="""Decides whether or not to resume training from a checkpoint. 
                             The path to this checkpoint can be specified in the config file, 
                             if not takes the ckpt of the last available run.""", 
-                            default=False,
         )
         # parser.add_argument('--dataset_path', type=str, help="Path to the dataset files")
-        parser.add_argument('--use_tmpdir', 
-                            type=bool, 
-                            help="""Whether or not to use the high bandwidth, 
-                            low latency TMPDIR of the gpu node for accessing the databases""", 
+        parser.add_argument('--use_tmpdir',
                             default=False,
+                            action="store_true",
+                            help="""Whether or not to use the high bandwidth, 
+                            low latency $TMPDIR of the gpu node for accessing the databases""", 
         )
 
         return parser.parse_args(argv)
 
-def read_yaml(config_path: str) -> dict:
-    """
-    Read a yaml file. Used to read the config file. 
-    """
-    if not config_path or not os.path.isfile(config_path):
-        raise FileNotFoundError("Configuration file not found or not specified.")
-    with open(config_path, 'r') as file:
-        return yaml.safe_load(file)
-
-def save_yaml(data: dict, filename: str ='config.yml') -> None:
-    """
-    Save a yaml file.
-    """
-    with open(filename, 'w') as file:
-        yaml.dump(data, file)
-
-def save_params(params: dict, basefolder: str, filename: str = 'gnn_params') -> None:
+def evaluate_GNN(
+              model: Union[Model, StandardModel],
+              dataloader_testing_instance: DataLoader,
+              config: dict, 
+              sub_folder: str,
+              logger: Logger,
+)-> pd.DataFrame:
         """
-        Method to save some additional information about the run in a 'global' csv file. Convenient for searches for specific parameters.
-        What is saved depends on the params attribute.
+        Evaluate the (pretrained) Graph Neural Network model on the testing dataset and save the results.
+        Args:
+                model (Union[Model, StandardModel]): The trained model instance.
+                dataloader_testing_instance (DataLoader): DataLoader instance for testing data.
+                config (Dict[str, Union[str, List[str]]]): Configuration dictionary.
+                sub_folder (str): Subfolder where results will be saved.
+                logger (Logger): Logger instance for logging information.
+
+        Returns:
+                pd.DataFrame: DataFrame containing the evaluation results.
         """
-        # Allows more dynamic adjustments in case the params schema differs from previous runs
-        # Ensure the directory exists
-        os.makedirs(basefolder, exist_ok=True)
+        #get predictions as a pd.DataFrame
+        test_results = model.predict_as_dataframe(dataloader = dataloader_testing_instance,
+                                                additional_attributes = model.target_labels + config.get('addedattributes_test', ['classification', 'cosmic_primary_type']),
+                                                gpus = [0]) 
+          
+        logger.info(f"Prediction finished. Writing to hdf5 file...")
 
-        temp = os.path.join(basefolder, f"{filename}.csv")
-        mode = 'a' if os.path.isfile(temp) else 'w'
-        
-        # Convert params to DataFrame and append separator
-        df = pd.DataFrame.from_dict(data=params, orient='index')
-            # Convert DataFrame to CSV string
-        csv_string = df.to_csv(header=False, mode=mode, lineterminator=os.linesep)
-    
-        # Append separator manually
-        csv_string += '--' * 20 + '\n'
-        # Write to file
-        with open(temp, mode) as f:
-            f.write(csv_string)       
+        #save test results in hdf5 file
+        test_results.to_hdf(os.path.join(sub_folder, 'test_results.h5'), key='test_results', mode='w')
 
-def create_sub_folder(run_name: str, base_folder: str, logger: Logger) -> str:
-        """
-        Creates a sub-folder for the current run.
-        """
-        sub_folder = os.path.join(base_folder, run_name)
-        os.makedirs(sub_folder, exist_ok=True)
-        logger.info(f"Subfolder created: {sub_folder}")
-        return sub_folder
+        return test_results
 
-def get_lastrun_path(runfoldername: str = 'runs_and_saved_models') -> str:
-        """
-        Returns the most recent runfolder under the runfoldername directory, given that they are sorted and the most recent is at the bottom 
-        """
-        dir_path = os.path.realpath(os.path.join(os.path.dirname(__file__), runfoldername))
-        temp = os.listdir(dir_path)
-        temp.sort()
-        directories = [os.path.join(dir_path, item) for item in temp if os.path.isdir(os.path.join(dir_path, item))]
-        if len(directories) == 0:
-               raise ("No previous runs found.")
-        return directories[-1]
-
-def get_model_config_path(sub_folder: str, logger: Logger) -> Optional[str]:
-        patterns = [os.path.join(sub_folder, 'GNN_*.yml'), os.path.join(sub_folder, 'GNN_*.yaml')]
-        files = []
-        for pattern in patterns:
-            files.extend(glob(pattern))
-        if files:
-                if len(files) > 1:
-                        logger.info(f"More than one model config found that fits the criteria in {sub_folder}. Choosing..")
-                return files[0]
-        else:
-               logger.warning(f"No model config found in {sub_folder}")
-               return None
-
-def get_datasetpaths(config: dict) -> List[str]:
-    """
-    Returns all relevant datasetpaths as a list from config depending on the specified flavor in config, and adds the corsika databases if required.
-    """
-    # Handling dataset paths based on flavors
-    datasetpaths = []
-    flavors = config.get('flavor', ['NuE'])
-    for flavor in flavors:
-        key = f"{flavor}_datasetpaths"
-        if key in config:
-            datasetpaths.extend(config.get(key))
-    if config.get('use_corsika_bool', False):
-        datasetpaths.extend(config.get('corsikasim_datasetpaths', []))
-    return datasetpaths
-
-def train_and_evaluate(
+def train_and_evaluate_GNN(
               config: dict,
               sub_folder: str,
               logger: Logger,
@@ -189,13 +130,13 @@ def train_and_evaluate(
         name = f"GNN_{config.get('backbone')}_merged{'_'.join(config.get('flavor'))}"
         modelpath = os.path.join(sub_folder, name)
 
-        model_config_path = get_model_config_path(sub_folder=sub_folder, logger=logger) if resumefromckpt else None
+        model_config_path = utils.get_model_config_path(sub_folder=sub_folder, logger=logger) if resumefromckpt else None
         if resumefromckpt and model_config_path:
         #        logger.info()
                # Load model configuration
                model_config = ModelConfig.load(model_config_path)
 
-               # Initialize model with randomly initialized weights
+               # Initialize model with randomly initialized weights (weights are loaded from the ckpt at training)
                model = Model.from_config(model_config, trust=True)
 
                #Access graph definition
@@ -278,68 +219,18 @@ def train_and_evaluate(
         lowercase_trainparam = [x.lower() for x in TRAINING_PARAMETER]
         if 'deposited_energy' in lowercase_trainparam or 'deposited energy' in lowercase_trainparam:
                 training_target_label = Custom.CustomLabel_depoEnergy()
-
-        if use_tmpdir:
-                tmpdir = os.environ["TMPDIR"]
-                
-                db_files = []
-                for root, _, files in os.walk(tmpdir):
-                        for file in files:
-                                if file.endswith(".db"):
-                                        db_files.append(os.path.join(root, file))
-                logger.info(f"Selection database folder contents: {db_files}")
-                        
-                TRUTH = config.get('addedattributes_trainval', ["first_vertex_energy", "second_vertex_energy", "third_vertex_energy", "visible_track_energy", "visible_spur_energy"])
-                TEST_TRUTH = config.get('addedattributes_test', ['classification', 'cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'])
-
-                training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_CustomTrainingLabel_splitDatabases(
-                                                                                                path=db_files,
-                                                                                                graph_definition=graph_definition, 
-                                                                                                features=FEATURE_NAMES,
-                                                                                                truth=TRUTH,
-                                                                                                training_target_label=training_target_label,
-                                                                                                test_truth=TEST_TRUTH,
-                                                                                                logger=logger,
-                )
-                logger.info(f"Detected training_target_label: {training_target_label}")
-
-                # training_dataset, validation_dataset, testing_dataset = torch.load(path_to_datasets)
         else:
-                datasetpaths = get_datasetpaths(config=config)
+                training_target_label = TRAINING_PARAMETER
 
-                #Create Datasets for training, validation and testing 
-                #random energy distribution between the created datasets (depends on the random state variable)
-                if config.get('training_parameter_inDatabase', False):
-                        TRUTH = TRAINING_PARAMETER + ADDED_ATTRIBUTES
-                        training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_traininglabelinDataset(
-                                                                                                path=datasetpaths, 
-                                                                                                graph_definition=graph_definition, 
-                                                                                                features=FEATURE_NAMES, 
-                                                                                                training_target_label=TRAINING_PARAMETER,
-                                                                                                truth=TRUTH,
-                                                                                                random_state=config.get('random_state', 42),
-                        )
-                else: 
-                                               
-                        TRUTH = config.get('addedattributes_trainval')
-                        TEST_TRUTH = config.get('addedattributes_test', None)
-                        training_dataset, validation_dataset, testing_dataset = Custom.CreateCustomDatasets_CustomTrainingLabel(
-                                                                                                        path=datasetpaths,
-                                                                                                        graph_definition=graph_definition, 
-                                                                                                        features=FEATURE_NAMES,
-                                                                                                        training_target_label=training_target_label,
-                                                                                                        truth=TRUTH,
-                                                                                                        classifications = config.get('classifications_to_train_on', [8, 9, 19, 20, 22, 23, 26, 27]),
-                                                                                                        test_truth=TEST_TRUTH,
-                                                                                                        config_for_dataset_datails= config.get('dataset_details', {}),
-                                                                                                        root_database_lengths = config.get("database_lengths", {}), 
-                                                                                                        test_size=config.get('dataset_details', {}).get('test_size'),
-                                                                                                        random_state=config.get('random_state', 42),
-                                                                                                        logger=logger,
-                                                                                                        save_database_yaml = config.get('save_database_yaml', False),
-                                )
-                        logger.info(f"Detected training_target_label: {training_target_label}")
-                
+        training_dataset, validation_dataset, testing_dataset = utils.create_custom_datasets(
+                config=config,
+                graph_definition=graph_definition,
+                feature_names=FEATURE_NAMES,
+                training_target_label=training_target_label,
+                logger=logger,
+                use_tmpdir=use_tmpdir
+        )
+
         logger.info(f"Length of training dataset: {len(training_dataset)}")
         
         #make Dataloaders
@@ -356,19 +247,14 @@ def train_and_evaluate(
 
         # define callbacks
         callbacks = [ProgressBar(refresh_rate=config.get('refresh_rate', 10000))]
-        callbacks.append(
-                EarlyStopping(
-                monitor = "val_loss",
-                patience = EARLY_STOPPING_PATIENCE,
-                )
-        )
+        
         callbacks.append(
                 ModelCheckpoint(
                 save_top_k = 1,
                 monitor = "val_loss",
                 mode = "min",
                 every_n_epochs = 1,
-                dirpath = sub_folder + f"/losses/version_{n}/checkpoints",
+                dirpath = os.path.join(sub_folder, "checkpoints"),
                 filename=f"{model.backbone.__class__.__name__}"
                     + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
                 )
@@ -383,7 +269,7 @@ def train_and_evaluate(
                 filename = "{epoch}_{step}",
                 )
         )
-
+        
         #save additional parameters that aren't included in the model yml file and save them in a more 'globalised' csv file 
         #for parameter search convenience  
         params = {
@@ -397,7 +283,7 @@ def train_and_evaluate(
         params.update(config.get('dataloader_config', {'batch_size': 8, 'num_workers': 32}))
         params.update({"Slurm job id": int(os.environ.get("SLURM_JOB_ID"))})
         BASEFOLDER = config.get('basefolder')
-        save_params(params=params, basefolder=BASEFOLDER)
+        utils.save_params(params=params, basefolder=BASEFOLDER)
 
         #define some keyword arguments for training the model
         fit_kwargs = {
@@ -413,19 +299,31 @@ def train_and_evaluate(
         
         if (EARLY_STOPPING_PATIENCE != -1):
                 fit_kwargs['early_stopping_patience'] = EARLY_STOPPING_PATIENCE
+        
+        #Add an early stopping callback to make sure best fit model is loaded after training: 
+        # see line 179 in easySyntax/easy_model -> fit()
+        callbacks.append(
+                EarlyStopping(
+                monitor = "val_loss",
+                patience = EARLY_STOPPING_PATIENCE if EARLY_STOPPING_PATIENCE != -1 else MAX_EPOCHS,
+                )
+        )
+
         if (ACCUMULATE_GRAD_BATCHES != -1):
                 fit_kwargs['accumulate_grad_batches'] = ACCUMULATE_GRAD_BATCHES
+                
         if resumefromckpt:
                 ckpt_path = config.get('ckpt_path')
                 default_ckpt_paths = None
                 if not ckpt_path:
                         # Only compute the default checkpoint path if not provided in the config
-                        default_ckpt_paths = glob(os.path.join(sub_folder, 'losses/version_*/checkpoints', '*'))
+                        default_ckpt_paths = glob(os.path.join(sub_folder, 'checkpoints', '*'))
                         # default_ckpt_paths = glob(os.path.join(sub_folder, 'epoch_checkpoints', '*'))
                         logger.info(f"found default_ckpt_paths: {default_ckpt_paths}")
 
                 if default_ckpt_paths:
-                        default_ckpt_paths.sort()
+                        # default_ckpt_paths.sort()
+                        default_ckpt_paths = sorted(default_ckpt_paths, key=lambda x: int(re.search(r'epoch=(\d+)', x).group(1)))
                         ckpt_path = default_ckpt_paths[-1]
 
                 if ckpt_path:
@@ -437,143 +335,24 @@ def train_and_evaluate(
         #train the model
         model.fit(**fit_kwargs)
 
-        #save the model weights and biases after training
-        #load weights from checkpoint if that training was interrupted before finishing the model.fit step
+        #save the model weights and biases after training, saves statedict of the last epoch 
         model.save_state_dict(f'{modelpath}.pth')
 
-        #get predictions as a pd.DataFrame
-        test_results = model.predict_as_dataframe(dataloader = dataloader_testing_instance,
-                                                additional_attributes = model.target_labels + config.get('addedattributes_test', ['classification', 'cosmic_primary_type']),
-                                                gpus = [0]) 
-          
-        logger.info(f"Prediction finished. Writing to hdf5 file...")
-
-        #save test results in hdf5 file
-        test_results.to_hdf(os.path.join(sub_folder, 'test_results.h5'), key='test_results', mode='w')
+        test_results = evaluate_GNN(model=model,
+                                    dataloader_testing_instance=dataloader_testing_instance,
+                                    config=config,
+                                    sub_folder=sub_folder,
+                                    logger=logger,
+        )
 
         return test_results
-
-def PlottingRoutine(
-              config: dict, 
-              logger: Logger,
-              results: pd.DataFrame = None, 
-              subfolder: str = None, 
-              target_label: Union[str, List[str]] = None
-              ):
-        """
-        Function to handle all the plotting. Mainly relies on the methods defined in Analysis.py
-        """
-        if isinstance(target_label, str):
-                target_label = [target_label]
-        
-        if subfolder is None:
-                raise FileNotFoundError("No subfolder found. Please make sure there is a folder available for loading test results and/or storing Plots.")
-        
-        os.makedirs(os.path.join(subfolder, 'plots'), exist_ok =True)
-
-        # Check if metrics file is created
-        metrics_path = os.path.join(subfolder, "losses/version_0/metrics.csv")
-        if os.path.exists(metrics_path):
-                print(f"Metrics file created at: {metrics_path}")
-                Analysis.plot_lossesandlearningrate(subfolder)
-        else:
-                message = colored("ERROR", "red") + f": Metrics file not found under {subfolder}."
-                logger.info(message)
-
-        #if no result dataframe is handed over, load the dataframe from the subfolder
-        if results is None:
-               results = Analysis.loadresults(subfolder=subfolder)
-
-        #All the other plotting calls
-        Analysis.plot_resultsashisto(results, subfolder=subfolder, target_label=target_label, backbone=config.get('backbone', 'DynEdge'))
-        Analysis.plotEtruevsEreco(results, subfolder=subfolder , normalise=['E_true', 'E_reco', 'nonormalisation'])
-        Analysis.plotIQRvsEtrue(results, subfolder=subfolder)
-        for i in config.get('classifications_to_train_on'):
-                Analysis.plotIQR(dataframe=results, savefolder=subfolder, plot_type='energy', classification=i)
-                Analysis.plotIQR(dataframe=results, savefolder=subfolder, plot_type='r', classification=i)
-                Analysis.plotIQR(dataframe=results, savefolder=subfolder, plot_type='z', classification=i)
-
-def get_config_and_sub_folder(
-              args: Namespace, 
-              resumefromckpt: bool,
-              logger: Logger,
-              foldername_allruns: str = 'runs_and_saved_models',
-              ) -> Tuple[dict, str]:
-        """
-        Method to handle some calls that are misplaced in the main method. Determines the config path and sets up the sub folder if necessary.
-        Returns the config_path and the sub_folder of the run
-        """
-        if args.config_path:
-                config_path = args.config_path
-                logger.info(f"Using config_path: {config_path} as specified.")
-        elif resumefromckpt:
-                config_path = os.path.join(get_lastrun_path(foldername_allruns), 'config.yaml')
-                logger.info(f"Since the resumefromckpt flag has been passed, the config file of the last available run in the subfolder will be used: {config_path}")
-        else:
-                config_path = os.path.realpath(os.path.join(os.path.dirname(__file__), "config.yaml"))
-                logger.info(f"Using the standard config at {config_path}, since neither config_path nor resumefromckpt was specified.")
-
-        config = read_yaml(config_path)
-        
-        if resumefromckpt:
-                if config.get('ckpt_path') and config.get('ckpt_path') not in {'last', 'best'}:
-                        import re
-                        # Regular expression to match the path up to "run_from_*"
-                        pattern = r'(.*/(?:run_from_[^/]+|run_jobid[^/]+))'
-
-                        # Search for the pattern in the path
-                        sub_folder = re.search(pattern, config.get('ckpt_path')).group(1)
-                else:
-                        sub_folder = get_lastrun_path(foldername_allruns)  
-                logger.info(f"Request to resume from checkpoint accepted, using subfolder: {sub_folder} to save files to.")
-        else:
-                run_name = f"run_jobid_{int(os.environ.get('SLURM_JOB_ID'))}"
-                basefolder = config.get('basefolder', '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/')
-                path_to_check = os.path.join(basefolder, run_name)
-
-                if os.path.exists(path=path_to_check):
-                        sub_folder=path_to_check
-                        logger.info(f"Subfolder {sub_folder} already exists.")
-
-                else:
-                        sub_folder = create_sub_folder(run_name=run_name, base_folder=basefolder, logger=logger) 
-                        # Save the YAML config file into subfolder if not resuming from checkpoint
-                        save_yaml(config, os.path.join(sub_folder, 'config.yaml'))
-         
-        return config, sub_folder
-
-def copy_selection_databases(config) -> str:
-        # Get the root folder for the selection databases from the config, or use the default path.
-        selection_database_root_folder = config.get('selection_database_root_folder', '/home/wecapstor3/capn/capn108h/selection_databases/allflavor_classif8_9_19_20_22_23_26_27')
-
-        # Copy selection databases to tmpdir for quicker accessibility.
-        tmpdir = os.environ.get("TMPDIR")
-        if not tmpdir:
-                raise EnvironmentError("TMPDIR environment variable is not set.")
-
-        selection_database_folder = os.path.join(tmpdir, "selection_databases")
-        print(f"Copying train, val, and test selection databases from {selection_database_root_folder} to {selection_database_folder} ...")
-
-        # Measure the time taken to copy the files.
-        t1 = time()
-
-        # Create the destination directory if it doesn't exist.
-        os.makedirs(selection_database_folder, exist_ok=True)
-
-        # Copy the entire directory tree.
-        shutil.copytree(src=selection_database_root_folder, dst=selection_database_folder, dirs_exist_ok=True)
-
-        t2 = time()
-        copy_time = timedelta(seconds=(t2 - t1))
-        print(f"Copying train, val and test selection databases done after {copy_time}.")
-
-        return selection_database_folder
 
 def main(argv: Optional[Sequence[str]] = None):
         logger = Logger()
         args = parse_args(argv)
         resumefromckpt = args.resumefromckpt
         use_tmpdir = args.use_tmpdir
+        config_path = args.config_path
 
         # Check if the current process is the main process for multi gpu training
         rank = int(os.environ["SLURM_PROCID"])
@@ -584,13 +363,13 @@ def main(argv: Optional[Sequence[str]] = None):
 
         print(f"ismain?: {is_main_process} (based on rank==0)")
 
-        config, sub_folder = get_config_and_sub_folder(args, 
+        config, sub_folder = utils.get_config_and_sub_folder(config_path, 
                                                         resumefromckpt, 
                                                         logger=logger, 
                                                         # is_main_process=is_main_process
         )    
         
-        results = train_and_evaluate(config, 
+        results = train_and_evaluate_GNN(config, 
                                         sub_folder, 
                                         logger=logger, 
                                         resumefromckpt=resumefromckpt, 
@@ -598,9 +377,10 @@ def main(argv: Optional[Sequence[str]] = None):
         )
 
         if is_main_process:
-                PlottingRoutine(config=config, 
+                Analysis.PlottingRoutine( 
                                 results=results, 
                                 subfolder=sub_folder, 
+                                config=config,
                                 target_label=config.get('training_parameter', ['deposited_energy']), 
                                 logger=logger
                 )

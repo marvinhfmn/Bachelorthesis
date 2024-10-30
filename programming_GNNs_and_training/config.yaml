@@ -14,14 +14,14 @@ node_definition:
   percentiles: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 
 dataloader_config:
-  batch_size: 8 #size of one batch
+  batch_size: 12 #size of one batch
   num_workers: 8 #number of workers for dataloader, should correspond to int(os.environ["SLURM_CPUS_PER_TASK"])
 
 #amount of epochs to be trained for
-max_epochs: 15
+max_epochs: 50
 
 #amount of epochs that are trained before terminating if there are no improvements in the validation loss, set it to -1 or omit if it shouldn't be used
-early_stopping_patience: 3
+early_stopping_patience: -1
 
 #accumulate the gradient for k amount of batches before making an optimiser step, set it to -1 or omit if it shouldn't be used
 accumulate_grad_batches: 10
@@ -97,10 +97,33 @@ training_parameter: ['deposited_energy']
 training_parameter_inDatabase: False
 
 #List of event-level columns in the input files that should be used and added as attributes on the graph objects.
-addedattributes_trainval: ["first_vertex_energy", "second_vertex_energy", "third_vertex_energy", "visible_track_energy", "visible_spur_energy"]
-addedattributes_test: ['classification', 'cosmic_primary_type', 'first_vertex_x', 'first_vertex_y', 'first_vertex_z', 'sim_weight'] #exclusive to test graph
+addedattributes_trainval: ["first_vertex_energy", 
+                          "second_vertex_energy", 
+                          "third_vertex_energy", 
+                          "visible_track_energy", 
+                          "visible_spur_energy",
+                          'primary_zenith', 
+                          'primary_azimuth',
+                          ]
+                          
+addedattributes_test: ['classification', 
+                      'cosmic_primary_type', 
+                      'first_vertex_x', 
+                      'first_vertex_y', 
+                      'first_vertex_z', 
+                      'sim_weight', 
+                      'primary_zenith', 
+                      'primary_azimuth', 
+                      'CascadeFilter_13', 
+                      'MuonFilter_13', 
+                      'OnlineL2Filter_17', 
+                      'HESEFilter_15', 
+                      'MESEFilter_15', 
+                      'HighQFilter_17'
+                      ] #exclusive to test graph
 #different to keep the training graph smaller
 
+# addedattributes_test:  []
 
 # training paramter + additional attributes = truth
 
@@ -131,10 +154,11 @@ scheduler_kwargs:
 
 scheduler_config:
   frequency: 1
-  monitor: "train_loss"
+  interval: 'epoch'
+  monitor: 'val_loss'
 
 #random state variable, useful to recreate train, val and test datasets (see CustomAdditionsforGNNTraining.CreateCustomDatasets)
 random_state: 42
 
-#specify an actual path, no keyword 'last' or 'best' explicitly supported yet 
-ckpt_path: '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/run_jobid_862299/losses/version_1/checkpoints/DynEdge-epoch=9-val_loss=0.10-train_loss=0.10.ckpt'
+#specify an actual path, no keyword 'last' or 'best' explicitly supported ...yet 
+ckpt_path: '/home/saturn/capn/capn108h/programming_GNNs_and_training/runs_and_saved_models/run_EnergyReco/checkpoints/DynEdge-epoch=41-val_loss=0.09-train_loss=0.08.ckpt'
